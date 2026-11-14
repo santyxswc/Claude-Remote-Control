@@ -31,6 +31,55 @@ export interface StatusView {
   readonly brake: { readonly engaged: false } | { readonly engaged: true; readonly since?: string }
   /** What `/shot` can capture on this machine; undefined when screenshots are not wired. */
   readonly captureKinds?: readonly CaptureKind[]
+  /** Files received and kept (F10); undefined when incoming files are not wired. */
+  readonly inbox?: { readonly files: number; readonly bytes: number }
+}
+
+/** What a tap on a choice button (or the typed "other" answer) did. */
+export type ChoiceOutcome =
+  | 'answered'
+  /** "Other..." tapped: the next text message is the answer. */
+  | 'awaiting_text'
+  | 'already_answered'
+  | 'expired'
+  | 'not_found'
+  | 'not_allowed'
+  | 'braked'
+  | 'delivery_failed'
+
+/** How a choice was closed, for the line under the question. */
+export type ChoiceStatusView =
+  | {
+      readonly status: 'answered'
+      readonly label: string
+      readonly who: string
+      readonly at: string
+    }
+  | { readonly status: 'answered_with_text'; readonly who: string; readonly at: string }
+  | { readonly status: 'awaiting_text' | 'expired' | 'cancelled' }
+
+/** One page of `/skills`; names match `SKILL_NAME`, descriptions are sanitized. */
+export interface SkillsMenuView {
+  readonly skills: readonly { readonly name: string; readonly description: string }[]
+  /** 0-based. */
+  readonly page: number
+  readonly pages: number
+  readonly projectKnown: boolean
+}
+
+export type SkillTapOutcome = 'sent' | 'not_found' | 'braked'
+
+/** Why an incoming file was not passed to Claude. */
+export interface AttachmentRefusalView {
+  readonly reason:
+    | 'too_large'
+    | 'empty'
+    | 'type_not_allowed'
+    | 'type_mismatch'
+    | 'rate_limited'
+    | 'download_failed'
+  readonly maxMegabytes: number
+  readonly allowed: readonly string[]
 }
 
 /** What a screenshot caption describes; `url` is shown to the owner, untrusted plain text. */
@@ -148,6 +197,26 @@ export interface Messages {
   readonly shotProblem: (view: ShotProblemView) => string
   /** Sent at once; the image (or the problem) follows when the capture ends. */
   readonly shotCapturing: string
+
+  // Bot: choices (F7)
+  /** The question Claude asks; untrusted plain text. */
+  readonly choicePrompt: (question: string) => string
+  /** Stands for a question sent in full just before the buttons (too long for one message). */
+  readonly choiceQuestionAbove: string
+  readonly choiceOtherButton: string
+  readonly choiceStatus: (view: ChoiceStatusView) => string
+  /** Short (a toast holds 200 characters). */
+  readonly choiceFeedback: (outcome: ChoiceOutcome) => string
+
+  // Bot: skills (F7)
+  readonly commandSkillsDescription: string
+  readonly skillsMenu: (view: SkillsMenuView) => string
+  readonly skillsNone: (projectKnown: boolean) => string
+  readonly skillsPageButtons: { readonly previous: string; readonly next: string }
+  readonly skillFeedback: (outcome: SkillTapOutcome) => string
+
+  // Bot: incoming files (F10)
+  readonly attachmentRefused: (view: AttachmentRefusalView) => string
 
   // PreToolUse hook (F6): shown at the terminal, and to Claude
   readonly brakeStopReason: (view: BrakeHookView) => string
@@ -337,6 +406,66 @@ function remedies(prefix: string, list: readonly string[]): string | undefined {
   return list.length === 0 ? undefined : `${prefix} ${list.join(', ')}.`
 }
 
+function inboxLine(
+  label: (files: number, megabytes: string) => string,
+  inbox: StatusView['inbox'],
+): string | undefined {
+  return inbox === undefined ? undefined : label(inbox.files, (inbox.bytes / 1_000_000).toFixed(1))
+}
+
+/** Longest description shown per skill in the list (the button carries only the name). */
+const SKILL_DESCRIPTION_SHOWN = 90
+
+function skillLines(view: SkillsMenuView): string {
+  return view.skills
+    .map((skill) => {
+      const description = sanitizeDisplayText(skill.description, SKILL_DESCRIPTION_SHOWN)
+      // No leading slash: Telegram would turn it into a link that sends the bare command.
+      return description === '' ? `• ${skill.name}` : `• ${skill.name} - ${description}`
+    })
+    .join('\n')
+}
+
+const CHOICE_FEEDBACK_ES: Readonly<Record<ChoiceOutcome, string>> = {
+  answered: 'Enviado a Claude.',
+  awaiting_text: 'Escribe tu respuesta en el próximo mensaje.',
+  already_answered: 'Esa pregunta ya se respondió.',
+  expired: 'Esa pregunta ya venció.',
+  not_found: 'Esa pregunta ya no existe.',
+  not_allowed: 'No autorizado.',
+  braked: 'El freno está activo: no se envió nada a Claude. Envía /resume primero.',
+  delivery_failed: 'No se pudo entregar la respuesta a Claude. Inténtalo de nuevo.',
+}
+
+const CHOICE_FEEDBACK_EN: Readonly<Record<ChoiceOutcome, string>> = {
+  answered: 'Sent to Claude.',
+  awaiting_text: 'Write your answer as your next message.',
+  already_answered: 'That question was already answered.',
+  expired: 'That question has expired.',
+  not_found: 'That question no longer exists.',
+  not_allowed: 'Not authorized.',
+  braked: 'The brake is engaged: nothing was sent to Claude. Send /resume first.',
+  delivery_failed: 'The answer could not be delivered to Claude. Try again.',
+}
+
+const ATTACHMENT_REASON_ES: Readonly<Record<AttachmentRefusalView['reason'], string>> = {
+  too_large: 'es más grande que el límite',
+  empty: 'está vacío',
+  type_not_allowed: 'su tipo no está permitido',
+  type_mismatch: 'su contenido no corresponde a su extensión',
+  rate_limited: 'enviaste demasiados archivos seguidos; espera un poco',
+  download_failed: 'no se pudo descargar',
+}
+
+const ATTACHMENT_REASON_EN: Readonly<Record<AttachmentRefusalView['reason'], string>> = {
+  too_large: 'it is larger than the limit',
+  empty: 'it is empty',
+  type_not_allowed: 'its type is not allowed',
+  type_mismatch: 'its content does not match its extension',
+  rate_limited: 'you sent too many files in a row; wait a little',
+  download_failed: 'it could not be downloaded',
+}
+
 const BRAKE_SOURCE_ES = { telegram: ' desde Telegram', terminal: ' desde la terminal', unknown: '' }
 const BRAKE_SOURCE_EN = { telegram: ' from Telegram', terminal: ' from the terminal', unknown: '' }
 
@@ -397,6 +526,7 @@ const es: Messages = {
         CAPTURE_KIND_ES,
         v.captureKinds,
       ),
+      inboxLine((files, mb) => `Archivos recibidos guardados: ${files} (${mb} MB)`, v.inbox),
       'No es posible saber desde aquí si la sesión cargó este canal ni si Claude está ocupado.',
     ),
   commandStartDescription: 'comprueba que el puente está conectado',
@@ -405,7 +535,8 @@ const es: Messages = {
   commandStopDescription: 'botón de pánico: frena a Claude y deniega los permisos pendientes',
   commandResumeDescription: 'retira el freno de /stop',
   slowDown: 'Vas muy rápido: los mensajes de más se descartaron. Espera unos segundos.',
-  onlyTextSupported: 'Por ahora solo se admite texto. Ese mensaje no se envió a Claude.',
+  onlyTextSupported:
+    'Por ahora solo se admiten texto, fotos y archivos. Ese mensaje no se envió a Claude.',
   queued: 'Claude está ocupado: tu mensaje quedó en cola y lo verá al terminar.',
   deliveryFailed: 'No se pudo entregar el mensaje a la sesión de Claude Code.',
   messageTooLong: (max) =>
@@ -505,6 +636,58 @@ const es: Messages = {
     }
   },
 
+  choicePrompt: (question) => `❓ Claude pregunta:\n\n${question}`,
+  choiceQuestionAbove: '❓ Claude pregunta (la pregunta completa está en el mensaje anterior).',
+  choiceOtherButton: 'Otra…',
+  choiceStatus: (v) => {
+    switch (v.status) {
+      case 'answered':
+        return `✅ Elegido: ${v.label} (${v.who}, ${v.at})`
+      case 'answered_with_text':
+        return `✅ Respondido con un mensaje (${v.who}, ${v.at})`
+      case 'awaiting_text':
+        return '✍️ Escribe tu respuesta en el próximo mensaje.'
+      case 'expired':
+        return '⌛ Venció sin respuesta.'
+      case 'cancelled':
+        return '🚫 Cancelada: la sesión que preguntó ya terminó.'
+    }
+  },
+  choiceFeedback: (outcome) => CHOICE_FEEDBACK_ES[outcome],
+
+  commandSkillsDescription: 'lista las skills de la sesión como botones',
+  skillsMenu: (v) =>
+    lines(
+      `🧩 Skills${v.pages > 1 ? ` (página ${v.page + 1} de ${v.pages})` : ''}:`,
+      '',
+      skillLines(v),
+      '',
+      'Pulsa una para pedirle a Claude que la use.',
+      v.projectKnown
+        ? undefined
+        : 'No se conoce el directorio del proyecto: solo se listan tus skills personales.',
+    ),
+  skillsNone: (projectKnown) =>
+    projectKnown
+      ? 'No se encontraron skills (ni en .claude/skills del proyecto ni en las personales).'
+      : 'No se conoce el directorio del proyecto (CLAUDE_PROJECT_DIR no está definido) y no hay skills personales.',
+  skillsPageButtons: { previous: '◀ Anterior', next: 'Siguiente ▶' },
+  skillFeedback: (outcome) =>
+    outcome === 'sent'
+      ? 'Enviado a Claude.'
+      : outcome === 'braked'
+        ? 'El freno está activo: no se envió nada a Claude. Envía /resume primero.'
+        : 'Esa skill ya no está. Envía /skills de nuevo.',
+
+  attachmentRefused: (v) =>
+    lines(
+      `📎 Ese archivo no se envió a Claude: ${ATTACHMENT_REASON_ES[v.reason]}.`,
+      v.reason === 'too_large' ? `El límite es ${v.maxMegabytes} MB.` : undefined,
+      v.reason === 'type_not_allowed' || v.reason === 'type_mismatch'
+        ? `Se admiten fotos y archivos ${v.allowed.join(', ')} (los de texto, en UTF-8).`
+        : undefined,
+    ),
+
   brakeStopReason: (v) =>
     v.source === undefined
       ? `telegram-bridge: el freno está activo, pero su archivo no se puede leer (${v.flagPath}). Claude se detuvo. Para retirarlo ejecuta "${CLI_INVOCATION} resume" o borra ese archivo.`
@@ -595,6 +778,7 @@ const en: Messages = {
         CAPTURE_KIND_EN,
         v.captureKinds,
       ),
+      inboxLine((files, mb) => `Received files kept: ${files} (${mb} MB)`, v.inbox),
       'From here it cannot be known whether the session loaded this channel or whether Claude is busy.',
     ),
   commandStartDescription: 'check that the bridge is connected',
@@ -603,7 +787,8 @@ const en: Messages = {
   commandStopDescription: 'panic button: brakes Claude and denies pending permissions',
   commandResumeDescription: 'releases the /stop brake',
   slowDown: 'You are going too fast: the extra messages were dropped. Wait a few seconds.',
-  onlyTextSupported: 'Only text is supported for now. That message was not sent to Claude.',
+  onlyTextSupported:
+    'Only text, photos and files are supported for now. That message was not sent to Claude.',
   queued: 'Claude is busy: your message is queued and Claude will see it when done.',
   deliveryFailed: 'The message could not be delivered to the Claude Code session.',
   messageTooLong: (max) =>
@@ -699,6 +884,58 @@ const en: Messages = {
         )
     }
   },
+
+  choicePrompt: (question) => `❓ Claude asks:\n\n${question}`,
+  choiceQuestionAbove: '❓ Claude asks (the full question is in the message above).',
+  choiceOtherButton: 'Other…',
+  choiceStatus: (v) => {
+    switch (v.status) {
+      case 'answered':
+        return `✅ Chosen: ${v.label} (${v.who}, ${v.at})`
+      case 'answered_with_text':
+        return `✅ Answered with a message (${v.who}, ${v.at})`
+      case 'awaiting_text':
+        return '✍️ Write your answer as your next message.'
+      case 'expired':
+        return '⌛ Expired without an answer.'
+      case 'cancelled':
+        return '🚫 Cancelled: the session that asked has ended.'
+    }
+  },
+  choiceFeedback: (outcome) => CHOICE_FEEDBACK_EN[outcome],
+
+  commandSkillsDescription: "lists the session's skills as buttons",
+  skillsMenu: (v) =>
+    lines(
+      `🧩 Skills${v.pages > 1 ? ` (page ${v.page + 1} of ${v.pages})` : ''}:`,
+      '',
+      skillLines(v),
+      '',
+      'Tap one to ask Claude to use it.',
+      v.projectKnown
+        ? undefined
+        : 'The project directory is not known: only your personal skills are listed.',
+    ),
+  skillsNone: (projectKnown) =>
+    projectKnown
+      ? "No skills were found (neither in the project's .claude/skills nor personal ones)."
+      : 'The project directory is not known (CLAUDE_PROJECT_DIR is not set) and there are no personal skills.',
+  skillsPageButtons: { previous: '◀ Previous', next: 'Next ▶' },
+  skillFeedback: (outcome) =>
+    outcome === 'sent'
+      ? 'Sent to Claude.'
+      : outcome === 'braked'
+        ? 'The brake is engaged: nothing was sent to Claude. Send /resume first.'
+        : 'That skill is gone. Send /skills again.',
+
+  attachmentRefused: (v) =>
+    lines(
+      `📎 That file was not sent to Claude: ${ATTACHMENT_REASON_EN[v.reason]}.`,
+      v.reason === 'too_large' ? `The limit is ${v.maxMegabytes} MB.` : undefined,
+      v.reason === 'type_not_allowed' || v.reason === 'type_mismatch'
+        ? `Accepted: photos and ${v.allowed.join(', ')} files (text ones in UTF-8).`
+        : undefined,
+    ),
 
   brakeStopReason: (v) =>
     v.source === undefined

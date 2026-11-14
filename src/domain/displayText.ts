@@ -38,6 +38,28 @@ export function sanitizeDisplayText(text: string, maxLength = MAX_DISPLAY_TEXT_L
   return points.slice(0, Math.max(0, maxLength - 1)).join('') + ELLIPSIS
 }
 
+/**
+ * The same cleaning for longer untrusted text that may span lines (a question
+ * Claude asks): controls, bidi tricks and invisible characters go, runs of
+ * blanks collapse, but line breaks stay. No length cap: callers that show it
+ * must never hide part of it silently.
+ */
+export function sanitizeMultilineText(text: string): string {
+  return text
+    .replace(/\r\n?/g, '\n')
+    .replace(INVISIBLE, '')
+    .split('\n')
+    .map((line) =>
+      line
+        .replace(CONTROL, ' ')
+        .replace(/[^\S\n]+/gu, ' ')
+        .trimEnd(),
+    )
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 /** Telegram usernames: 5-32 of `A-Z a-z 0-9 _` (a few old ones are shorter). */
 const USERNAME = /^[A-Za-z0-9_]{1,32}$/
 

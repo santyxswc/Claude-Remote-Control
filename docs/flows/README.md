@@ -18,12 +18,15 @@ or a live Claude Code session yet; the checklist below is how that happens.
 | [F4](F4.md) | Notices via hooks | Implemented. Automated acceptance, including the real `hook.ts` as a child process. Live: hook firing, `UserPromptSubmit` for chat turns, Windows async hooks pending |
 | [F5](F5.md) | Screenshots on demand | Implemented. Automated acceptance with fake capture programs. Two smoke tests passed on one Windows machine (page and screen). Live: Telegram delivery, Wayland and X11 pending |
 | [F6](F6.md) | Panic button `/stop` | Implemented. Automated acceptance, including the real `brakeHook.ts`. Live: effect of `continue: false` on a turn in flight, tmux Escape pending |
+| [F7](F7.md) | Options (`ask_choice`) and `/skills` | Implemented. Automated acceptance (`tests/acceptance/F7.test.ts`). Live: whether a slash command in a channel event runs, and how Claude acts on "Use the skill /name", pending |
+| [F10](F10.md) | Incoming images and files | Implemented. Automated acceptance (`tests/acceptance/F10.test.ts`) with a fake `getFile` and download. Live: real photo sizes, albums, `getFile` on real files pending |
 
-Later flows (F7 to F15) are in [../roadmap.md](../roadmap.md).
+The other later flows (F8, F9, F11 to F15) are in [../roadmap.md](../roadmap.md).
 
 Where a flow doc and the code differ, the code wins. Known cases are listed in the architecture
 and roadmap notes; for instance F2's command list (`/start`, `/help`, `/status`) has since grown
-with `/stop`, `/resume` and `/shot`.
+with `/stop`, `/resume`, `/shot` and `/skills`, and F2's "only text" notice now reads "only text,
+photos and files" once F10 is wired.
 
 ## Live-validation checklist
 
@@ -124,7 +127,7 @@ Source: [F2](F2.md), manual verification.
   arrives as several ordered messages. A "reply to my message" answer is threaded.
 - [ ] **[All]** `/start`, `/help`, `/status` answer at once and do not reach Claude; `/somethingelse`
   reaches Claude as text.
-- [ ] **[All]** A photo and a sticker produce one "only text is supported" notice.
+- [ ] **[All]** A sticker produces one "only text, photos and files" notice (photos are F10, Part 9).
 - [ ] **[All]** Redaction: put `DEMO_SECRET=Zq8vR2pL0042` in the project's `.env`, restart the session, ask
   Claude to reply with its value: the chat shows `[REDACTED]`. Also a fake `ghp_` token.
 - [ ] **[All]** Ask Claude to send to `chat_id 12345`: refused, `reply.refused` in the audit.
@@ -233,10 +236,50 @@ Source: [F6](F6.md), manual verification. Hooks from Part 5 must be loaded.
 - [ ] **[All]** With `claude --debug`, the `PreToolUse` hook takes a few tens of milliseconds per call.
 - [ ] **[Linux/tmux]** Record what one Escape does at an idle prompt with text typed in it.
 
-### Part 8: Wrap-up
+### Part 8: Options and skills (F7)
+
+Source: [F7](F7.md), manual verification.
+
+- [ ] **[All]** Ask Claude to use `ask_choice` with two options and `allow_other`. Record the exact
+  tool name in the permission prompt. The phone shows the question and three buttons; the
+  session already has `choice_id`.
+- [ ] **[All]** Tap an option: the session gets `kind="choice"` and the label; the message loses its
+  buttons. A second tap says "already answered".
+- [ ] **[All]** Tap "Other…" and type an answer: same `choice_id`. `/status` typed in between is not
+  taken as the answer.
+- [ ] **[All]** While braked, a tap gets the brake toast and nothing reaches Claude.
+- [ ] **[All]** With a permission prompt open, tap a choice whose label contains `yes <id>`: no verdict.
+- [ ] **[All]** Leave a choice for 30 minutes: "Expired". Restart the session with one open: "Cancelled".
+- [ ] **[All]** `/skills` lists project and personal skills (not plugin ones). Tap one: the session
+  gets "Use the skill /<name>". **Record whether Claude invokes the skill, whether a bare `/name`
+  in a channel event would have run as a command, and what happens with a skill that sets
+  `disable-model-invocation: true`.**
+- [ ] **[All]** Start without `CLAUDE_PROJECT_DIR` from a directory that is not a project: `/skills`
+  says the project is unknown.
+
+### Part 9: Incoming files (F10)
+
+Source: [F10](F10.md), manual verification.
+
+- [ ] **[All]** Send a photo with a caption: the session gets the caption and the path; Claude can read
+  the image. Record the photo sizes Telegram offers and which one was downloaded (`bytes` in
+  the log).
+- [ ] **[Linux]** `ls -l <stateDir>/inbox/<session>` shows `-rw-------` files in a `drwx------`
+  directory.
+- [ ] **[All]** A PDF and a `.md` as documents arrive; an `.exe`, a `.zip` and an `.svg` are refused;
+  a text file renamed to `.png` is refused as a mismatch.
+- [ ] **[All]** An album of several photos: one event each. Record whether Telegram delivers the album
+  as separate messages in one `getUpdates` batch.
+- [ ] **[All]** `TELEGRAM_BRIDGE_MAX_UPLOAD_MB=1` and a 2 MB file: refused with the limit. Also try a
+  file over 20 MB: refused before any download.
+- [ ] **[All]** Braked: a photo is not downloaded. A voice note gets the "only text, photos and files" notice.
+- [ ] **[All]** `/status` shows the inbox. A new session removes the old session's inbox.
+- [ ] **[All]** The bot token appears nowhere in stderr (`claude --debug`) or the audit.
+
+### Part 10: Wrap-up
 
 - [ ] **[All]** Record every "needs live verification" outcome in the ADRs: 0005 (findings), 0003
-  (`onFailure` on a Claude Code older than 2.1.295 ignoring the unknown key), 0009 (plugin items), and
+  (`onFailure` on a Claude Code older than 2.1.295 ignoring the unknown key), 0009 (plugin items), 0011 (skills from the chat, albums), and
   the open points of each flow doc.
 - [ ] **[All]** Remove the throwaway directory, unset the variables, and repeat `init` and `pair` for real.
 - [ ] **[All]** Update the README: the exact install commands for the plugin route, the minimum Claude Code

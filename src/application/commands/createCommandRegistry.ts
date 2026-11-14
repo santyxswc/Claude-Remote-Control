@@ -1,6 +1,7 @@
 import type { Messages } from '../i18n/messages.ts'
 import type { AllowedSenderStore } from '../ports/AllowedSenderStore.ts'
 import type { BrakeFlag } from '../ports/BrakeFlag.ts'
+import type { SkillsMenu } from '../skills/SkillsMenu.ts'
 import type { CaptureScreenshot } from '../use-cases/CaptureScreenshot.ts'
 import type { ResumeSession } from '../use-cases/ResumeSession.ts'
 import type { StopSession } from '../use-cases/StopSession.ts'
@@ -8,6 +9,7 @@ import { CommandRegistry } from './CommandRegistry.ts'
 import { HelpCommand } from './HelpCommand.ts'
 import { ResumeCommand } from './ResumeCommand.ts'
 import { ShotCommand } from './ShotCommand.ts'
+import { SkillsCommand } from './SkillsCommand.ts'
 import { StartCommand } from './StartCommand.ts'
 import { StatusCommand } from './StatusCommand.ts'
 import { StopCommand } from './StopCommand.ts'
@@ -23,6 +25,10 @@ export interface CommandRegistryDeps {
   readonly resumeSession: ResumeSession
   /** F5; without it there is no `/shot`. */
   readonly screenshots?: Pick<CaptureScreenshot, 'start' | 'availableKinds'>
+  /** F7; without it there is no `/skills`. */
+  readonly skills?: Pick<SkillsMenu, 'send'>
+  /** F10: inbox usage for `/status`. */
+  readonly inboxUsage?: () => Promise<{ readonly files: number; readonly bytes: number }>
 }
 
 /** The chat commands, in `/help` order. */
@@ -42,6 +48,7 @@ export function createCommandRegistry(deps: CommandRegistryDeps): CommandRegistr
         pendingPermissions: deps.pendingPermissions,
         brake: deps.brake,
         ...(screenshots === undefined ? {} : { captureKinds: () => screenshots.availableKinds() }),
+        ...(deps.inboxUsage === undefined ? {} : { inbox: deps.inboxUsage }),
       }),
     )
     .register(
@@ -62,6 +69,9 @@ export function createCommandRegistry(deps: CommandRegistryDeps): CommandRegistr
         messages.shotCapturing,
       ),
     )
+  }
+  if (deps.skills !== undefined) {
+    registry.register(new SkillsCommand(messages.commandSkillsDescription, deps.skills))
   }
   return registry
 }

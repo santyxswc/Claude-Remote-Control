@@ -9,7 +9,8 @@ import type { PromptGateway, PromptKeyboard, PromptOptions } from '../ports/Prom
  * `RedactingChatGateway`. A prompt is never chunked: the whole text is
  * redacted first, and only then fitted to one message (M3), either by
  * refusing (the caller sends the details before) or by eliding the middle
- * with a note saying how much is not shown (M2).
+ * with a note saying how much is not shown (M2). Button labels are redacted
+ * as well; the button data is ours and passes untouched.
  */
 export class RedactingPromptGateway implements PromptGateway {
   constructor(
@@ -25,7 +26,7 @@ export class RedactingPromptGateway implements PromptGateway {
     keyboard: PromptKeyboard,
     options?: PromptOptions,
   ): Promise<PromptRef> {
-    return this.inner.sendPrompt(chatId, this.#fit(text, options), keyboard)
+    return this.inner.sendPrompt(chatId, this.#fit(text, options), this.#labels(keyboard))
   }
 
   editPrompt(
@@ -34,13 +35,20 @@ export class RedactingPromptGateway implements PromptGateway {
     keyboard: PromptKeyboard,
     options?: PromptOptions,
   ): Promise<void> {
-    return this.inner.editPrompt(ref, this.#fit(text, options), keyboard)
+    return this.inner.editPrompt(ref, this.#fit(text, options), this.#labels(keyboard))
   }
 
   answerCallback(callbackId: string, text?: string): Promise<void> {
     return this.inner.answerCallback(
       callbackId,
       text === undefined ? undefined : this.#fit(text, undefined),
+    )
+  }
+
+  /** Button labels can be Claude's text too (F7 choices): redacted like the message. */
+  #labels(keyboard: PromptKeyboard): PromptKeyboard {
+    return keyboard.map((row) =>
+      row.map((button) => ({ ...button, label: this.redactor.redact(button.label).text })),
     )
   }
 

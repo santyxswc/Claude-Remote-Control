@@ -2,8 +2,23 @@ import { describe, expect, test } from 'bun:test'
 import {
   MAX_DISPLAY_TEXT_LENGTH,
   sanitizeDisplayText,
+  sanitizeMultilineText,
   sanitizeUsername,
 } from '../../src/domain/displayText.ts'
+
+describe('sanitizeMultilineText', () => {
+  test('keeps lines, drops invisible and bidi characters, turns controls into spaces', () => {
+    expect(sanitizeMultilineText('a\u{202e}b\u{200b}\r\nc\u0007d\te')).toBe('ab\nc d e')
+  })
+
+  test('collapses blanks and at most one empty line in a row; trims the whole text', () => {
+    expect(sanitizeMultilineText('\n\n  one   two  \n\n\n\n three \n\n')).toBe('one two\n\n three')
+  })
+
+  test('nothing visible is empty', () => {
+    expect(sanitizeMultilineText(' \u{200b}\n\u{2066} ')).toBe('')
+  })
+})
 
 describe('sanitizeDisplayText', () => {
   test.each([

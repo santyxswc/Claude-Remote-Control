@@ -8,6 +8,8 @@ export interface InboundCallback {
   /** The chat of the message that carried the button; missing if the client did not say. */
   readonly chatId: string | undefined
   readonly chatKind: ChatKind | undefined
+  /** The message that carried the button, as a decimal string; missing if the client did not say. */
+  readonly messageId?: string
   readonly sender: SenderProfile | undefined
   readonly data: string | undefined
 }

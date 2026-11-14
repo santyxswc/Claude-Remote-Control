@@ -10,7 +10,7 @@ a verifiable exit condition.
 | 0 · Technical proof | F0 | Minimal channel working | The three unknowns are answered in an ADR | Implemented. Unknowns answered from the docs in [ADR 0005](adr/0005-f0-findings.md); live confirmation pending |
 | 1 · MVP | F1 to F6 | Remote control usable every day | You spend a day away from home without returning to the keyboard, with tests green | Implemented and covered by automated tests. Not yet validated live: see [flows/README.md](flows/README.md) |
 | 2 · Publication | none new | Public repo with README, demo and `SECURITY.md` | Another person installs it on their PC following only the README | Docs done (README in English and Spanish, `SECURITY.md`, `CONTRIBUTING.md`, architecture, flow index, plugin skills). Pending: license, demo, and the plugin install route confirmed live |
-| 3 · Productivity | F7 to F12 | Option buttons, git, status, files, charts and memory | A full session ends with an approved summary saved | Not started |
+| 3 · Productivity | F7 to F12 | Option buttons, git, status, files, charts and memory | A full session ends with an approved summary saved | In progress. F7 ([options and skills](flows/F7.md)) and F10 ([incoming files](flows/F10.md)) implemented with automated acceptance; live validation pending. F8, F9, F11 and F12 not started |
 | 4 · Voice and multi-project | F13, F14 | Daemon and one topic per session | Two simultaneous sessions work without crossed messages | Not started |
 | 5 · Mini App | F15 | Live screen inside Telegram | The tunnel passes a written security review | Not started |
 
@@ -23,10 +23,10 @@ Each one adds commands, MCP tools or an adapter without changing the core.
 
 | Flow | What it does | Design key |
 | --- | --- | --- |
-| F7 · Options and skills | `/skills` lists the project's skills as buttons. An `ask_choice` tool lets Claude offer options as buttons | Choosing a button sends a normal instruction; it does not skip permissions |
+| F7 · Options and skills | `/skills` lists the project's skills as buttons. An `ask_choice` tool lets Claude offer options as buttons | Choosing a button sends a normal instruction; it does not skip permissions. **Implemented** ([F7](flows/F7.md), [ADR 0011](adr/0011-choices-skills-and-attachments.md)) |
 | F8 · Git from the chat | `/diff` sends the diff as a file, with Commit, Revert and Open PR buttons | Each button is a predefined instruction that goes through the permission relay |
 | F9 · Pinned status message | A pinned message shows the current task and pending items, edited live | Fed by hooks, not by Claude |
-| F10 · Incoming images and files | A photo or file is saved to a temporary folder and reaches Claude as a path | Size limit and an allowlist of types |
+| F10 · Incoming images and files | A photo or file is saved to a temporary folder and reaches Claude as a path | Size limit and an allowlist of types. **Implemented** ([F10](flows/F10.md)): extension and magic-byte checks, a private per-session inbox with a 24 h TTL and a 200 MB quota |
 | F11 · Charts | A `send_chart` tool takes a Vega-Lite spec and sends the PNG | No browser: Vega to SVG, then resvg to PNG |
 | F12 · Summary and memory | On session close or `/wrap`, Claude summarizes into `docs/sessions/` and proposes lines for `CLAUDE.md` | Nothing enters `CLAUDE.md` without your approval by button |
 | F13 · Voice notes | whisper.cpp transcribes locally; the bot shows the text and asks for confirmation | Confirming stops a transcription error from becoming a command |
@@ -35,7 +35,8 @@ Each one adds commands, MCP tools or an adapter without changing the core.
 
 Other items called out in the docs and not scheduled: the `privacy: minimal` mode (notices without
 code or paths), TOTP for high-risk approvals and an inactivity lock, `/status` showing the
-hook-fed busy state, an XDG desktop portal capture strategy, and a `PlaywrightCapturer`.
+hook-fed busy state, an XDG desktop portal capture strategy, a `PlaywrightCapturer`, listing
+plugin skills in `/skills`, and voice or video files (F13 covers voice notes).
 
 ## Open decisions (need the owner)
 
@@ -54,7 +55,10 @@ hook-fed busy state, an XDG desktop portal capture strategy, and a `PlaywrightCa
     `--channels plugin:telegram-bridge@<marketplace>` form, async hooks on Windows);
   - that an older Claude Code ignores the `onFailure` key ([ADR 0003](adr/0003-stop-via-hook.md));
   - the minimum Claude Code version for channels;
-  - whether `UserPromptSubmit` fires for turns started by channel messages ([F4](flows/F4.md)).
+  - whether `UserPromptSubmit` fires for turns started by channel messages ([F4](flows/F4.md));
+  - whether a slash command inside a channel event runs as a command, and how Claude acts on
+    "Use the skill /name" ([F7](flows/F7.md));
+  - real photo sizes, album delivery and `getFile` on real files ([F10](flows/F10.md)).
 - [ ] **Plugin distribution.** The repository has no `marketplace.json`; decide whether to add one
   (a marketplace entry would make `/plugin install` possible). It would still need the
   development-channel flag, since only `claude-plugins-official` and an organization's

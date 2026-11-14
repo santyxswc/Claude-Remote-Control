@@ -1,10 +1,10 @@
 /**
- * Wires the permission relay: the four use cases around one store, the
- * button-tap path and the text-verdict step of the inbound chain.
+ * Wires the permission relay: the four use cases around one store and the
+ * text-verdict step of the inbound chain (taps are routed by the
+ * `ButtonTapHandler` built in `telegramInbound.ts`).
  */
 import type { StateStores } from '../adapters/storage/openState.ts'
 import { CryptoRandomSource } from '../adapters/system/CryptoRandomSource.ts'
-import { PermissionCallbackHandler } from '../application/callbacks/PermissionCallbackHandler.ts'
 import type { Messages } from '../application/i18n/messages.ts'
 import { PermissionPrompts } from '../application/permissions/PermissionPrompts.ts'
 import { PermissionVerdictStep } from '../application/pipeline/PermissionVerdictStep.ts'
@@ -43,7 +43,6 @@ export interface PermissionWiring {
   readonly expire: ExpirePermissions
   /** For F4's `PostToolUse` hook. */
   readonly markResolvedLocally: MarkPermissionResolvedLocally
-  readonly callbacks: PermissionCallbackHandler
   readonly verdictStep: PermissionVerdictStep
   /** Open requests of this process, for `/status`. */
   readonly pendingCount: () => number
@@ -77,14 +76,6 @@ export function buildPermissions(deps: PermissionWiringDeps): PermissionWiring {
     resolve,
     expire: new ExpirePermissions(common),
     markResolvedLocally: new MarkPermissionResolvedLocally(common),
-    callbacks: new PermissionCallbackHandler({
-      authorize,
-      resolve,
-      prompts: deps.outbound,
-      messages,
-      clock,
-      logger,
-    }),
     verdictStep: new PermissionVerdictStep(resolve, deps.outbound, messages, logger),
     pendingCount: () => store.listOpen().filter((request) => request.session === session).length,
     lastRelayedAt: () => {

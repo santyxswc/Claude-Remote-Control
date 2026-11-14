@@ -17,6 +17,8 @@ export interface StatusCommandDeps {
   readonly brake: Pick<BrakeFlag, 'status'>
   /** What `/shot` can capture here (F5); omitted when screenshots are not wired. */
   readonly captureKinds?: () => readonly CaptureKind[]
+  /** Files kept in the inbox (F10); omitted when incoming files are not wired. */
+  readonly inbox?: () => Promise<{ readonly files: number; readonly bytes: number }>
 }
 
 /**
@@ -41,6 +43,7 @@ export class StatusCommand implements ChatCommand {
         pendingPermissions: this.deps.pendingPermissions(),
         brake: this.#brake(),
         ...(this.deps.captureKinds === undefined ? {} : { captureKinds: this.deps.captureKinds() }),
+        ...(this.deps.inbox === undefined ? {} : { inbox: await this.deps.inbox() }),
       }),
     )
   }

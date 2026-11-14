@@ -19,6 +19,7 @@ export interface ApiPayload {
   readonly link_preview_options?: { readonly is_disabled?: boolean }
   readonly message_id?: number
   readonly callback_query_id?: string
+  readonly file_id?: string
   readonly reply_markup?: {
     readonly inline_keyboard?: readonly (readonly { text: string; callback_data?: string }[])[]
   }
@@ -52,6 +53,25 @@ type Reply =
     }
   | { readonly networkError: string }
 
+/** A file the fake serves through `getFile` and `/file/bot<token>/<path>`. */
+export interface FakeFile {
+  readonly bytes: Uint8Array
+  /** What `getFile` declares; the real size by default. `null` declares none. */
+  readonly declaredSize?: number | null
+  /** The `file_path` `getFile` returns; `documents/file_<n>` by default. */
+  readonly path?: string
+  /** The download is streamed in chunks of this many bytes (default: one chunk). */
+  readonly chunkSize?: number
+  /** The download fails with this HTTP status. */
+  readonly status?: number
+  /** The download throws, with the full URL (token included) in the message, like fetch can. */
+  readonly networkError?: boolean
+  /** After the bytes, the stream hangs until the request is aborted (a stuck download). */
+  readonly stall?: boolean
+}
+
+type From = { id: number; username?: string; first_name: string }
+
 const BOT_INFO = {
   id: 123456789,
   is_bot: true,
@@ -74,6 +94,9 @@ export class FakeTelegramApi {
   readonly calls: ApiCall[] = []
   readonly uploads: ApiUpload[] = []
   readonly urls: string[] = []
+  /** `file_path`s downloaded, in order. */
+  readonly downloads: string[] = []
+  readonly #files = new Map<string, FakeFile & { readonly path: string }>()
   readonly #updates: Update[] = []
   readonly #scripted = new Map<string, Reply[]>()
   #wake: (() => void) | undefined
@@ -84,6 +107,8 @@ export class FakeTelegramApi {
   readonly fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input)
     this.urls.push(url)
+    const download = /\/file\/bot[^/]+\/(.+)$/.exec(url)
+    if (download?.[1] !== undefined) return this.#download(url, download[1], init?.signal)
     const method = url.slice(url.lastIndexOf('/') + 1)
     const payload =
       typeof init?.body === 'string'
@@ -102,8 +127,65 @@ export class FakeTelegramApi {
     this.#scripted.set(method, [...(this.#scripted.get(method) ?? []), ...replies])
   }
 
+  /** Makes `fileId` downloadable. */
+  addFile(fileId: string, file: FakeFile): void {
+    this.#files.set(fileId, { ...file, path: file.path ?? `documents/file_${this.#files.size}` })
+  }
+
+  /** Queues a private photo message (`sizes` smallest first, like Telegram). */
+  sendPhoto(
+    from: From,
+    sizes: readonly { fileId: string; width: number; height: number; size?: number }[],
+    options: { caption?: string; mediaGroupId?: string } = {},
+  ): number {
+    return this.#sendMedia(from, options, {
+      photo: sizes.map((size) => ({
+        file_id: size.fileId,
+        file_unique_id: `u-${size.fileId}`,
+        width: size.width,
+        height: size.height,
+        ...(size.size === undefined ? {} : { file_size: size.size }),
+      })),
+    })
+  }
+
+  /** Queues a private document message. */
+  sendDocument(
+    from: From,
+    document: { fileId: string; fileName?: string; size?: number; mimeType?: string },
+    options: { caption?: string; mediaGroupId?: string } = {},
+  ): number {
+    return this.#sendMedia(from, options, {
+      document: {
+        file_id: document.fileId,
+        file_unique_id: `u-${document.fileId}`,
+        ...(document.fileName === undefined ? {} : { file_name: document.fileName }),
+        ...(document.size === undefined ? {} : { file_size: document.size }),
+        ...(document.mimeType === undefined ? {} : { mime_type: document.mimeType }),
+      },
+    })
+  }
+
+  #sendMedia(
+    from: From,
+    options: { caption?: string; mediaGroupId?: string },
+    media: Record<string, unknown>,
+  ): number {
+    return this.push({
+      message: {
+        message_id: this.#nextUpdateId,
+        date: 1_700_000_000,
+        chat: { id: from.id, type: 'private', first_name: from.first_name },
+        from: { is_bot: false, ...from },
+        ...(options.caption === undefined ? {} : { caption: options.caption }),
+        ...(options.mediaGroupId === undefined ? {} : { media_group_id: options.mediaGroupId }),
+        ...media,
+      },
+    } as unknown as Omit<Update, 'update_id'>)
+  }
+
   /** Queues a private text message from `from` and wakes a pending `getUpdates`. */
-  sendText(from: { id: number; username?: string; first_name: string }, text: string): number {
+  sendText(from: From, text: string): number {
     return this.push({
       message: {
         message_id: this.#nextUpdateId,
@@ -214,9 +296,61 @@ export class FakeTelegramApi {
         }
       case 'getUpdates':
         return { ok: true, result: await this.#takeUpdates(payload, signal) }
+      case 'getFile': {
+        const file = this.#files.get(String(payload.file_id))
+        if (file === undefined) {
+          return { ok: false, error_code: 400, description: 'Bad Request: invalid file_id' }
+        }
+        const declared = file.declaredSize === undefined ? file.bytes.length : file.declaredSize
+        return {
+          ok: true,
+          result: {
+            file_id: payload.file_id,
+            file_unique_id: `u-${payload.file_id}`,
+            file_path: file.path,
+            ...(declared === null ? {} : { file_size: declared }),
+          },
+        }
+      }
       default:
         throw new Error(`FakeTelegramApi: unexpected method ${method}`)
     }
+  }
+
+  /** `GET /file/bot<token>/<path>`: the bytes, streamed in chunks. */
+  #download(url: string, path: string, signal: AbortSignal | null | undefined): Response {
+    this.downloads.push(path)
+    const file = [...this.#files.values()].find((candidate) => candidate.path === path)
+    if (file === undefined) return new Response('Not Found', { status: 404 })
+    if (file.networkError === true) throw new Error(`fetch failed: ${url}`)
+    if (file.status !== undefined) return new Response('error', { status: file.status })
+    const step = Math.max(1, file.chunkSize ?? file.bytes.length)
+    let at = 0
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (signal?.aborted) {
+          controller.error(new Error('aborted'))
+          return
+        }
+        if (at >= file.bytes.length) {
+          if (file.stall !== true) {
+            controller.close()
+            return
+          }
+          return new Promise<void>((resolve) => {
+            const fail = () => {
+              controller.error(new Error('aborted'))
+              resolve()
+            }
+            if (signal?.aborted) fail()
+            else signal?.addEventListener('abort', fail, { once: true })
+          })
+        }
+        controller.enqueue(file.bytes.slice(at, at + step))
+        at += step
+      },
+    })
+    return new Response(body, { status: 200 })
   }
 
   /**

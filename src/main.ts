@@ -3,7 +3,9 @@
  * MCP over stdin/stdout, so nothing here may write to stdout: logs go to stderr.
  * Bigger pieces of wiring live in `src/composition/`.
  */
+import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import packageJson from '../package.json' with { type: 'json' }
 import { createScreenCapturers } from './adapters/capture/createScreenCapturers.ts'
@@ -20,9 +22,10 @@ import { StderrLogger } from './adapters/logging/StderrLogger.ts'
 import { McpChannelServer } from './adapters/mcp/McpChannelServer.ts'
 import { createSessionController } from './adapters/session/createSessionController.ts'
 import { spawnProcess } from './adapters/session/processRunner.ts'
+import { DiskSkillFiles, resolveProjectDir } from './adapters/skills/DiskSkillFiles.ts'
 import { TOKEN_ENV } from './adapters/storage/DotEnvTokenStore.ts'
 import { openState, type StateStores } from './adapters/storage/openState.ts'
-import { defaultStateDir } from './adapters/storage/stateDir.ts'
+import { defaultStateDir, resolveClaudeConfigDir } from './adapters/storage/stateDir.ts'
 import { DotEnvProjectSecrets } from './adapters/system/DotEnvProjectSecrets.ts'
 import { SystemClock } from './adapters/system/SystemClock.ts'
 import { LOCALE_ENV, messagesFor, parseLocale } from './application/i18n/messages.ts'
@@ -33,10 +36,12 @@ import { buildOutbound } from './composition/outbound.ts'
 import { buildSendReply } from './composition/replies.ts'
 import { buildScreenshots } from './composition/screenshots.ts'
 import { startTelegramInbound, type TelegramInbound } from './composition/telegramInbound.ts'
+import { maxUploadBytes } from './domain/attachments/attachmentPolicy.ts'
 import { selectSecretValues } from './domain/redaction/secretValues.ts'
 
 const SERVER_NAME = 'telegram-bridge'
 const PROJECT_DIR_ENV = 'CLAUDE_PROJECT_DIR'
+const MAX_UPLOAD_ENV = 'TELEGRAM_BRIDGE_MAX_UPLOAD_MB'
 
 let logger: Logger = new StderrLogger()
 
@@ -120,6 +125,15 @@ const channel = new McpChannelServer({
   // Permission prompts only where senders are authenticated: a token and the allowlist.
   permissionRelay: state !== undefined && token !== undefined,
   ...(canCapture ? { screenshot: (request) => screenshots.execute(request) } : {}),
+  // F7: buttons exist only with a token and the allowlist; taps reach only the polling process.
+  ...(state !== undefined && token !== undefined
+    ? {
+        askChoice: async (request) =>
+          polling === undefined
+            ? { status: 'refused', reason: 'not_polling' }
+            : polling.choices.ask.execute(request),
+      }
+    : {}),
 })
 
 let devInbound: DevHttpInbound | undefined
@@ -164,6 +178,17 @@ logger.info('channel connected', { stateDir })
 if (state !== undefined && token === undefined) {
   logger.warn('telegram is not configured; run `bun run bridge -- init`, then `pair`')
 } else if (state !== undefined && token !== undefined && stateDir !== undefined) {
+  const upload = maxUploadBytes(env[MAX_UPLOAD_ENV])
+  if (upload.invalid) {
+    logger.warn(`${MAX_UPLOAD_ENV} must be a whole number of MB from 1 to 20; using 20`)
+  }
+  const knownProject = resolveProjectDir(env, process.cwd(), existsSync)
+  let configDir: string | undefined
+  try {
+    configDir = resolveClaudeConfigDir(env, homedir())
+  } catch (error) {
+    logger.warn('personal skills are not listed: the config directory is invalid', { error })
+  }
   try {
     polling = startTelegramInbound({
       state,
@@ -183,6 +208,12 @@ if (state !== undefined && token === undefined) {
         logger,
       }),
       ...(screenshots === undefined ? {} : { screenshots }),
+      attachments: { stateDir, maxBytes: upload.bytes },
+      skillFiles: new DiskSkillFiles({
+        projectDir: knownProject,
+        userSkillsDir: configDir === undefined ? undefined : join(configDir, 'skills'),
+        logger,
+      }),
     })
   } catch (error) {
     logger.error('telegram setup failed; serving MCP without it', { error })
