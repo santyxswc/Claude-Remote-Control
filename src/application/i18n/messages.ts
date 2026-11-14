@@ -3,7 +3,9 @@
  * default; `TELEGRAM_BRIDGE_LOCALE=en` switches to English. Diagnostic logs
  * on stderr are not user-facing and stay in English.
  */
+import type { CaptureKind } from '../../domain/capture/CaptureTarget.ts'
 import type { PermissionOutcome } from '../permissions/PermissionOutcome.ts'
+import type { CaptureUnavailable } from '../ports/ScreenCapturer.ts'
 
 export type Locale = 'es' | 'en'
 
@@ -26,7 +28,25 @@ export interface StatusView {
   readonly pendingPermissions: number
   /** The panic brake; `since` is ISO 8601, undefined when the flag cannot be read. */
   readonly brake: { readonly engaged: false } | { readonly engaged: true; readonly since?: string }
+  /** What `/shot` can capture on this machine; undefined when screenshots are not wired. */
+  readonly captureKinds?: readonly CaptureKind[]
 }
+
+/** What a screenshot caption describes; `url` is shown to the owner, untrusted plain text. */
+export type ShotCaptionView =
+  | { readonly kind: 'screen' }
+  | { readonly kind: 'url'; readonly url: string }
+
+/** Why `/shot` produced no image. */
+export type ShotProblemView =
+  | { readonly problem: 'busy' | 'invalid_url' | 'failed' }
+  | {
+      readonly problem: 'unavailable'
+      readonly kind: CaptureKind
+      readonly reason: CaptureUnavailable['reason'] | undefined
+      readonly remedies: readonly string[]
+    }
+  | { readonly problem: 'too_large'; readonly megabytes: number }
 
 /** What `/stop` did, reported truthfully. */
 export interface StopReportView {
@@ -113,6 +133,11 @@ export interface Messages {
   readonly resumeNotEngaged: string
   /** A message that was not forwarded because the brake is engaged. */
   readonly brakeHeldMessage: string
+
+  // Bot: screenshots (F5)
+  readonly commandShotDescription: string
+  readonly shotCaption: (view: ShotCaptionView) => string
+  readonly shotProblem: (view: ShotProblemView) => string
 
   // PreToolUse hook (F6): shown at the terminal, and to Claude
   readonly brakeStopReason: (view: BrakeHookView) => string
@@ -227,6 +252,47 @@ const INTERRUPT_EN: Readonly<Record<StopReportView['interrupt'], string | undefi
   skipped: undefined,
 }
 
+const CAPTURE_KIND_ES: Readonly<Record<CaptureKind, string>> = {
+  screen: 'pantalla',
+  url: 'páginas web',
+}
+const CAPTURE_KIND_EN: Readonly<Record<CaptureKind, string>> = {
+  screen: 'screen',
+  url: 'web pages',
+}
+
+function captureLine(
+  label: string,
+  none: string,
+  names: Readonly<Record<CaptureKind, string>>,
+  kinds: readonly CaptureKind[] | undefined,
+): string | undefined {
+  if (kinds === undefined) return undefined
+  return `${label}: ${kinds.length === 0 ? none : kinds.map((kind) => names[kind]).join(', ')}`
+}
+
+const SHOT_UNAVAILABLE_ES: Readonly<Record<CaptureUnavailable['reason'], string>> = {
+  no_display:
+    'no hay sesión gráfica (ni DISPLAY ni WAYLAND_DISPLAY): Claude Code debe correr dentro del escritorio',
+  no_tool: 'no se encontró ninguna herramienta de captura',
+  no_browser: 'no se encontró un navegador Chromium, Chrome, Brave o Edge',
+  invalid_browser_override:
+    'TELEGRAM_BRIDGE_BROWSER no es la ruta absoluta de un programa que exista',
+}
+
+const SHOT_UNAVAILABLE_EN: Readonly<Record<CaptureUnavailable['reason'], string>> = {
+  no_display:
+    'there is no graphical session (neither DISPLAY nor WAYLAND_DISPLAY): Claude Code must run inside the desktop',
+  no_tool: 'no screenshot tool was found',
+  no_browser: 'no Chromium, Chrome, Brave or Edge browser was found',
+  invalid_browser_override:
+    'TELEGRAM_BRIDGE_BROWSER is not the absolute path of an existing program',
+}
+
+function remedies(prefix: string, list: readonly string[]): string | undefined {
+  return list.length === 0 ? undefined : `${prefix} ${list.join(', ')}.`
+}
+
 const BRAKE_SOURCE_ES = { telegram: ' desde Telegram', terminal: ' desde la terminal', unknown: '' }
 const BRAKE_SOURCE_EN = { telegram: ' from Telegram', terminal: ' from the terminal', unknown: '' }
 
@@ -273,7 +339,7 @@ const es: Messages = {
   help: (commands) =>
     `Comandos:\n${commandList(commands)}\n\nCualquier otro texto, incluidos otros /comandos, se envía a Claude.`,
   status: (v) =>
-    [
+    lines(
       `Bot: ${v.botUsername === undefined ? 'desconocido' : `@${v.botUsername}`}`,
       `Emparejado desde: ${v.pairedSince ?? 'desconocido'}`,
       `Conexión MCP con Claude Code: ${v.sessionConnected ? 'abierta' : 'cerrada'}`,
@@ -281,8 +347,14 @@ const es: Messages = {
       v.brake.engaged
         ? `Freno: ACTIVO desde ${v.brake.since ?? 'desconocido'} (/resume lo retira)`
         : 'Freno: no activo',
+      captureLine(
+        'Capturas',
+        'ninguna (/shot explica qué instalar)',
+        CAPTURE_KIND_ES,
+        v.captureKinds,
+      ),
       'No es posible saber desde aquí si la sesión cargó este canal ni si Claude está ocupado.',
-    ].join('\n'),
+    ),
   commandStartDescription: 'comprueba que el puente está conectado',
   commandHelpDescription: 'muestra esta ayuda',
   commandStatusDescription: 'estado del puente',
@@ -350,6 +422,30 @@ const es: Messages = {
   resumeNotEngaged: 'El freno no estaba activo.',
   brakeHeldMessage:
     '🛑 El freno está activo: este mensaje no se envió a Claude. Envía /resume primero.',
+
+  commandShotDescription: 'captura la pantalla; /shot <url> captura una página web',
+  shotCaption: (v) =>
+    lines(
+      v.kind === 'screen' ? '📸 Pantalla completa' : `📸 ${v.url}`,
+      '⚠️ Las imágenes no pasan por la censura de secretos: revisa antes de reenviarlas.',
+    ),
+  shotProblem: (v) => {
+    switch (v.problem) {
+      case 'busy':
+        return 'Ya hay una captura en curso. Inténtalo en unos segundos.'
+      case 'invalid_url':
+        return 'Esa dirección no se puede capturar: solo http:// o https://, sin usuario ni contraseña (por ejemplo /shot localhost:3000).'
+      case 'too_large':
+        return `La captura pesa unos ${v.megabytes} MB, más de lo que Telegram admite (50 MB). No se envió.`
+      case 'failed':
+        return 'La captura falló. Los detalles quedan en el registro del canal.'
+      case 'unavailable':
+        return lines(
+          `${v.kind === 'screen' ? 'Capturar la pantalla' : 'Capturar páginas web'} no está disponible aquí${v.reason === undefined ? '.' : `: ${SHOT_UNAVAILABLE_ES[v.reason]}.`}`,
+          remedies('Para habilitarlo instala o configura:', v.remedies),
+        )
+    }
+  },
 
   brakeStopReason: (v) =>
     v.source === undefined
@@ -420,7 +516,7 @@ const en: Messages = {
   help: (commands) =>
     `Commands:\n${commandList(commands)}\n\nAny other text, other /commands included, goes to Claude.`,
   status: (v) =>
-    [
+    lines(
       `Bot: ${v.botUsername === undefined ? 'unknown' : `@${v.botUsername}`}`,
       `Paired since: ${v.pairedSince ?? 'unknown'}`,
       `MCP connection to Claude Code: ${v.sessionConnected ? 'open' : 'closed'}`,
@@ -428,8 +524,14 @@ const en: Messages = {
       v.brake.engaged
         ? `Brake: ENGAGED since ${v.brake.since ?? 'unknown'} (/resume releases it)`
         : 'Brake: not engaged',
+      captureLine(
+        'Screenshots',
+        'none (/shot says what to install)',
+        CAPTURE_KIND_EN,
+        v.captureKinds,
+      ),
       'From here it cannot be known whether the session loaded this channel or whether Claude is busy.',
-    ].join('\n'),
+    ),
   commandStartDescription: 'check that the bridge is connected',
   commandHelpDescription: 'show this help',
   commandStatusDescription: 'bridge status',
@@ -494,6 +596,30 @@ const en: Messages = {
   resumeNotEngaged: 'The brake was not engaged.',
   brakeHeldMessage:
     '🛑 The brake is engaged: this message was not sent to Claude. Send /resume first.',
+
+  commandShotDescription: 'captures the screen; /shot <url> captures a web page',
+  shotCaption: (v) =>
+    lines(
+      v.kind === 'screen' ? '📸 Full screen' : `📸 ${v.url}`,
+      '⚠️ Images do not go through secret redaction: check before forwarding them.',
+    ),
+  shotProblem: (v) => {
+    switch (v.problem) {
+      case 'busy':
+        return 'A capture is already running. Try again in a few seconds.'
+      case 'invalid_url':
+        return 'That address cannot be captured: only http:// or https://, without a user or password (for example /shot localhost:3000).'
+      case 'too_large':
+        return `The capture is about ${v.megabytes} MB, more than Telegram accepts (50 MB). It was not sent.`
+      case 'failed':
+        return 'The capture failed. The details are in the channel log.'
+      case 'unavailable':
+        return lines(
+          `${v.kind === 'screen' ? 'Capturing the screen' : 'Capturing web pages'} is not available here${v.reason === undefined ? '.' : `: ${SHOT_UNAVAILABLE_EN[v.reason]}.`}`,
+          remedies('To enable it, install or set:', v.remedies),
+        )
+    }
+  },
 
   brakeStopReason: (v) =>
     v.source === undefined

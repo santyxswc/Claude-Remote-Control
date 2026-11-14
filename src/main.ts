@@ -3,8 +3,11 @@
  * MCP over stdin/stdout, so nothing here may write to stdout: logs go to stderr.
  * Bigger pieces of wiring live in `src/composition/`.
  */
+import { homedir } from 'node:os'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import packageJson from '../package.json' with { type: 'json' }
+import { createScreenCapturers } from './adapters/capture/createScreenCapturers.ts'
+import { systemProbe } from './adapters/capture/systemProbe.ts'
 import { DevChatGateway } from './adapters/dev/DevChatGateway.ts'
 import {
   DEV_CHAT_ID,
@@ -27,6 +30,7 @@ import type { Logger } from './application/ports/Logger.ts'
 import { createHookIpcServer, createSessionTracking } from './composition/hooks.ts'
 import { buildOutbound } from './composition/outbound.ts'
 import { buildSendReply } from './composition/replies.ts'
+import { buildScreenshots } from './composition/screenshots.ts'
 import { startTelegramInbound, type TelegramInbound } from './composition/telegramInbound.ts'
 import { selectSecretValues } from './domain/redaction/secretValues.ts'
 
@@ -74,6 +78,31 @@ const sendReply = buildSendReply({
   onSent: () => tracking.policy.replied(clock.now()),
 })
 
+// F5: only where images can reach an allowlisted chat (a token and the state directory).
+const screenshots =
+  state === undefined || token === undefined
+    ? undefined
+    : buildScreenshots({
+        stateDir,
+        state,
+        setup: createScreenCapturers({
+          platform: process.platform,
+          env,
+          homeDir: homedir(),
+          probe: systemProbe,
+          run: spawnProcess,
+          logger,
+        }),
+        images: outbound,
+        messages,
+        clock,
+        logger,
+      })
+const canCapture = screenshots !== undefined && screenshots.availableKinds().length > 0
+if (screenshots !== undefined) {
+  logger.info('screenshot capture', { kinds: screenshots.availableKinds() })
+}
+
 const channel = new McpChannelServer({
   name: SERVER_NAME,
   version: packageJson.version,
@@ -81,6 +110,7 @@ const channel = new McpChannelServer({
   logger,
   // Permission prompts only where senders are authenticated: a token and the allowlist.
   permissionRelay: state !== undefined && token !== undefined,
+  ...(canCapture ? { screenshot: (request) => screenshots.execute(request) } : {}),
 })
 
 let devInbound: DevHttpInbound | undefined
@@ -141,6 +171,7 @@ if (state !== undefined && token === undefined) {
         run: spawnProcess,
         logger,
       }),
+      ...(screenshots === undefined ? {} : { screenshots }),
     })
   } catch (error) {
     logger.error('telegram setup failed; serving MCP without it', { error })

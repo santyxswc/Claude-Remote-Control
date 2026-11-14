@@ -15,17 +15,18 @@ export interface SessionControllerContext {
 }
 
 /**
- * GoF Factory Method: tmux on Linux when this process runs inside a tmux
- * pane (`TMUX` and a valid `TMUX_PANE`, inherited from Claude Code), the
- * no-op everywhere else. Keystroke injection on Windows and macOS is out of
- * scope (ADR 0003): there the PreToolUse brake is the only stop.
+ * GoF Factory Method: tmux on any non-Windows platform (Linux, macOS...)
+ * when this process runs inside a tmux pane (`TMUX` and a valid `TMUX_PANE`,
+ * inherited from Claude Code), the no-op everywhere else. Keystroke
+ * injection on Windows is out of scope (ADR 0003): there the PreToolUse brake
+ * is the only stop.
  */
 export function createSessionController(context: SessionControllerContext): SessionController {
   const { env } = context
   const pane = env[TMUX_PANE_ENV]
   const tmux = env[TMUX_ENV]
   const inTmux = tmux !== undefined && tmux !== '' && isTmuxPaneId(pane)
-  if (context.platform === 'linux' && inTmux) {
+  if (context.platform !== 'win32' && inTmux) {
     return new TmuxSessionController({ pane, run: context.run, logger: context.logger })
   }
   return new NoopSessionController()

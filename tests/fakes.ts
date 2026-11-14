@@ -2,9 +2,11 @@ import type { InboundHandler } from '../src/application/pipeline/InboundStep.ts'
 import type { AllowedSenderStore } from '../src/application/ports/AllowedSenderStore.ts'
 import type { AuditEntry, AuditLog } from '../src/application/ports/AuditLog.ts'
 import type { BrakeFlag, BrakeStatus } from '../src/application/ports/BrakeFlag.ts'
+import type { CapturedFileInfo, CaptureScratch } from '../src/application/ports/CaptureScratch.ts'
 import type { ChannelEvent, ChannelPort } from '../src/application/ports/ChannelPort.ts'
 import type { ChatGateway, SendOptions, SendReceipt } from '../src/application/ports/ChatGateway.ts'
 import type { Clock } from '../src/application/ports/Clock.ts'
+import type { ImageGateway, OutboundImage } from '../src/application/ports/ImageGateway.ts'
 import type { InboundPoller, PollingExit } from '../src/application/ports/InboundPoller.ts'
 import type { LogFields, Logger } from '../src/application/ports/Logger.ts'
 import type { PairingStore } from '../src/application/ports/PairingStore.ts'
@@ -21,6 +23,11 @@ import type {
 } from '../src/application/ports/PollerLock.ts'
 import type { PromptGateway, PromptKeyboard } from '../src/application/ports/PromptGateway.ts'
 import type { RandomSource } from '../src/application/ports/RandomSource.ts'
+import type {
+  CapturedImage,
+  CaptureWorkspace,
+  ScreenCapturer,
+} from '../src/application/ports/ScreenCapturer.ts'
 import type { SecretHasher } from '../src/application/ports/SecretHasher.ts'
 import type { ActivityState, SessionActivity } from '../src/application/ports/SessionActivity.ts'
 import type {
@@ -31,6 +38,7 @@ import type { Sleeper } from '../src/application/ports/Sleeper.ts'
 import type { Terminal } from '../src/application/ports/Terminal.ts'
 import type { AllowedSender } from '../src/domain/AllowedSender.ts'
 import type { BrakeRecord } from '../src/domain/brake/BrakeRecord.ts'
+import type { CaptureKind, CaptureTarget } from '../src/domain/capture/CaptureTarget.ts'
 import type { Pairing } from '../src/domain/Pairing.ts'
 import type { PermissionRequest, PromptRef } from '../src/domain/permissions/PermissionRequest.ts'
 import type { SenderProfile } from '../src/domain/Sender.ts'
@@ -459,5 +467,67 @@ export class FakeSessionController implements SessionController {
     this.calls += 1
     if (this.result instanceof Error) throw this.result
     return this.result
+  }
+}
+
+/** Records images "sent"; `failWith` makes the next sends reject. */
+export class FakeImageGateway implements ImageGateway {
+  readonly sent: { chatId: string; image: OutboundImage; caption: string }[] = []
+  failWith: Error | undefined
+
+  async sendImage(chatId: string, image: OutboundImage, caption: string): Promise<void> {
+    if (this.failWith !== undefined) throw this.failWith
+    this.sent.push({ chatId, image, caption })
+  }
+}
+
+/** Scratch space in memory: what is "on disk" is `files`; `live` counts undisposed workspaces. */
+export class FakeCaptureScratch implements CaptureScratch {
+  readonly files = new Map<string, Uint8Array>()
+  readonly disposed: CaptureWorkspace[] = []
+  created = 0
+
+  async create(): Promise<CaptureWorkspace> {
+    const dir = `scratch-${this.created++}`
+    return { dir, imagePath: `${dir}/image.png` }
+  }
+
+  async inspect(path: string): Promise<CapturedFileInfo> {
+    const bytes = this.files.get(path)
+    if (bytes === undefined) throw new Error(`ENOENT: ${path}`)
+    return { bytes: bytes.length, head: bytes.subarray(0, 24) }
+  }
+
+  async dispose(workspace: CaptureWorkspace): Promise<void> {
+    this.disposed.push(workspace)
+    for (const path of [...this.files.keys()]) {
+      if (path.startsWith(`${workspace.dir}/`)) this.files.delete(path)
+    }
+  }
+
+  get live(): number {
+    return this.created - this.disposed.length
+  }
+}
+
+/** A capture strategy that "writes" `image` into the fake scratch, or fails. */
+export class FakeCapturer implements ScreenCapturer {
+  readonly targets: CaptureTarget[] = []
+  failWith: Error | undefined
+  /** Resolve this to let a pending capture finish (for the busy test). */
+  gate: Promise<void> | undefined
+
+  constructor(
+    readonly kinds: readonly CaptureKind[],
+    private readonly scratch: FakeCaptureScratch,
+    public image: Uint8Array,
+  ) {}
+
+  async capture(target: CaptureTarget, workspace: CaptureWorkspace): Promise<CapturedImage> {
+    this.targets.push(target)
+    await this.gate
+    if (this.failWith !== undefined) throw this.failWith
+    this.scratch.files.set(workspace.imagePath, this.image)
+    return { path: workspace.imagePath, mime: 'image/png' }
   }
 }

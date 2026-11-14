@@ -2,10 +2,11 @@ import { describe, expect, test } from 'bun:test'
 import { EmptyMessageError, PartialDeliveryError } from '../../../src/application/errors.ts'
 import { ChunkingChatGateway } from '../../../src/application/outbound/ChunkingChatGateway.ts'
 import { RedactingChatGateway } from '../../../src/application/outbound/RedactingChatGateway.ts'
+import { RedactingImageGateway } from '../../../src/application/outbound/RedactingImageGateway.ts'
 import { RedactingPromptGateway } from '../../../src/application/outbound/RedactingPromptGateway.ts'
 import { REDACTION_MARK } from '../../../src/domain/redaction/SecretRedactor.ts'
 import { createSecretRedactor } from '../../../src/domain/redaction/secretValues.ts'
-import { FakeChatGateway, FakePromptGateway } from '../../fakes.ts'
+import { FakeChatGateway, FakeImageGateway, FakePromptGateway } from '../../fakes.ts'
 
 const SECRET = 'Zq8!vR2#pL-0042'
 
@@ -130,5 +131,27 @@ describe('RedactingPromptGateway', () => {
     expect(sent.startsWith('HEAD ')).toBe(true)
     expect(sent.endsWith(' TAIL')).toBe(true)
     expect(sent).not.toContain('Qz000')
+  })
+})
+
+describe('RedactingImageGateway', () => {
+  test('redacts the caption, then fits it; the image passes untouched', async () => {
+    const inner = new FakeImageGateway()
+    const gateway = new RedactingImageGateway(inner, createSecretRedactor([SECRET]), 40)
+    const image = { path: 'p.png', filename: 'screenshot.png', as: 'photo' } as const
+
+    await gateway.sendImage('1', image, `page http://x/?k=${SECRET}`)
+    await gateway.sendImage('1', image, `${'a'.repeat(30)} ${SECRET} ${'b'.repeat(30)}`)
+
+    expect(inner.sent[0]).toEqual({
+      chatId: '1',
+      image,
+      caption: `page http://x/?k=${REDACTION_MARK}`,
+    })
+    const fitted = inner.sent[1]?.caption ?? ''
+    expect(fitted.length).toBe(40)
+    expect(fitted).toStartWith('aaaa')
+    expect(fitted).toEndWith('bbbb')
+    expect(JSON.stringify(inner.sent)).not.toContain(SECRET)
   })
 })

@@ -86,9 +86,12 @@ describe('createSessionController', () => {
   const build = (platform: NodeJS.Platform, env: Record<string, string | undefined>) =>
     createSessionController({ platform, env, run: fakeRunner().run, logger: new MemoryLogger() })
 
-  test('tmux on Linux inside a pane', () => {
-    expect(build('linux', IN_TMUX)).toBeInstanceOf(TmuxSessionController)
-  })
+  test.each([['linux'], ['darwin'], ['freebsd']] as const)(
+    'tmux on %s inside a pane',
+    (platform) => {
+      expect(build(platform, IN_TMUX)).toBeInstanceOf(TmuxSessionController)
+    },
+  )
 
   test.each([
     ['linux', {}],
@@ -97,7 +100,7 @@ describe('createSessionController', () => {
     ['linux', { TMUX: '', TMUX_PANE: '%3' }],
     ['linux', { TMUX: IN_TMUX.TMUX, TMUX_PANE: 'bogus' }],
     ['win32', IN_TMUX],
-    ['darwin', IN_TMUX],
+    ['darwin', {}],
   ] as const)('%s with %p: no-op', async (platform, env) => {
     const controller = build(platform, env)
     expect(controller).toBeInstanceOf(NoopSessionController)
@@ -109,6 +112,13 @@ describe('spawnProcess (with bun itself, never tmux)', () => {
   test('reports the exit code', async () => {
     const result = await spawnProcess([process.execPath, '-e', 'process.exit(3)'], 5_000)
     expect(result).toEqual({ exitCode: 3, timedOut: false })
+  })
+
+  test('adds extra environment variables to the child', async () => {
+    const script = "process.exit(process.env.TB_PROBE === 'a b;c' && process.env.PATH ? 0 : 9)"
+    expect(
+      await spawnProcess([process.execPath, '-e', script], 5_000, { env: { TB_PROBE: 'a b;c' } }),
+    ).toEqual({ exitCode: 0, timedOut: false })
   })
 
   test('kills a program that outlives the timeout', async () => {

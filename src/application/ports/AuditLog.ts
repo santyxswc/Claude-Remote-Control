@@ -26,6 +26,8 @@ export type AuditEvent =
   | 'brake.engaged'
   | 'brake.released'
   | 'session.stopped'
+  | 'screenshot.sent'
+  | 'screenshot.not_sent'
 
 /** Values that are safe to persist: never tokens, codes or message text. */
 export type AuditDetails = Readonly<Record<string, string | number | boolean | null>>

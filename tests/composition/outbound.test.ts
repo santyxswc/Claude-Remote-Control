@@ -4,7 +4,7 @@
  * exports nothing but the decorated pipeline. These tests fail if that changes.
  */
 import { describe, expect, test } from 'bun:test'
-import { readdirSync, readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { extractImports } from '../../scripts/architecture.ts'
 import { DevChatGateway, type DevReply } from '../../src/adapters/dev/DevChatGateway.ts'
@@ -15,6 +15,8 @@ import { buildOutbound } from '../../src/composition/outbound.ts'
 import { REDACTION_MARK } from '../../src/domain/redaction/SecretRedactor.ts'
 import { FakeClock, FakeSleeper } from '../fakes.ts'
 import { FakeTelegramApi, TEST_TOKEN } from '../fakeTelegram.ts'
+import { makePng } from '../png.ts'
+import { makeTempDir, removeTempDir } from '../tempDir.ts'
 
 const srcRoot = join(import.meta.dir, '..', '..', 'src')
 
@@ -156,5 +158,57 @@ describe('prompts', () => {
     await expect(chat.sendPrompt(DEV_CHAT_ID, 'x', [])).rejects.toThrow(
       'no chat platform is configured',
     )
+  })
+})
+
+describe('images', () => {
+  test('a photo and a document go up as multipart with a redacted, plain caption', async () => {
+    const dir = makeTempDir()
+    try {
+      const path = join(dir, 'shot.png')
+      const png = makePng(8, 6)
+      writeFileSync(path, png)
+      const api = new FakeTelegramApi()
+      const chat = buildOutbound({
+        token: TEST_TOKEN,
+        dev: undefined,
+        literalSecrets: ['Zq8!vR2#pL-0042'],
+        fetch: api.fetch,
+      })
+      await chat.sendImage(
+        '5000000001',
+        { path, filename: 'screenshot.png', as: 'photo' },
+        `x ${TEST_TOKEN}`,
+      )
+      await chat.sendImage(
+        '5000000001',
+        { path, filename: 'screenshot.png', as: 'document' },
+        `y Zq8!vR2#pL-0042 ${'z'.repeat(2000)}`,
+      )
+      const [photo, document] = [api.callsTo('sendPhoto')[0], api.callsTo('sendDocument')[0]]
+      expect(photo?.payload).toMatchObject({
+        chat_id: '5000000001',
+        caption: `x ${REDACTION_MARK}`,
+      })
+      expect(photo?.payload.photo).toStartWith('attach://')
+      expect(photo?.payload.parse_mode).toBeUndefined()
+      expect(document?.payload.document).toStartWith('attach://')
+      expect(document?.payload.caption?.length).toBe(1024)
+      expect(api.uploads.map((u) => [u.method, u.filename])).toEqual([
+        ['sendPhoto', 'screenshot.png'],
+        ['sendDocument', 'screenshot.png'],
+      ])
+      expect(api.uploads.every((u) => Buffer.from(u.bytes).equals(Buffer.from(png)))).toBe(true)
+      expect(JSON.stringify(api.calls)).not.toContain('Zq8!')
+    } finally {
+      removeTempDir(dir)
+    }
+  })
+
+  test('images exist only on Telegram', async () => {
+    const chat = buildOutbound({ token: undefined, dev: new DevChatGateway(), literalSecrets: [] })
+    await expect(
+      chat.sendImage(DEV_CHAT_ID, { path: 'x.png', filename: 'x.png', as: 'photo' }, ''),
+    ).rejects.toThrow('no chat platform is configured')
   })
 })

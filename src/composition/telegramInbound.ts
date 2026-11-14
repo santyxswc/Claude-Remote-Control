@@ -1,7 +1,7 @@
 /**
  * Wires the inbound side of the channel: the Chain of Responsibility from
  * Telegram polling to the session, the button-tap path and the permission
- * relay, the hook listener (F4) and the `/stop` brake (F6), under the
+ * relay, the hook listener (F4), `/shot` (F5) and the `/stop` brake (F6), under the
  * single-poller lock.
  */
 import type { PermissionRequestHandler } from '../adapters/mcp/McpChannelServer.ts'
@@ -25,6 +25,7 @@ import type { PermissionVerdictPort } from '../application/ports/PermissionVerdi
 import type { PromptGateway } from '../application/ports/PromptGateway.ts'
 import type { SessionController } from '../application/ports/SessionController.ts'
 import { AuthorizeSender } from '../application/use-cases/AuthorizeSender.ts'
+import type { CaptureScreenshot } from '../application/use-cases/CaptureScreenshot.ts'
 import { ClaimPairing } from '../application/use-cases/ClaimPairing.ts'
 import { HandleInboundMessage } from '../application/use-cases/HandleInboundMessage.ts'
 import { buildBrake } from './brake.ts'
@@ -58,6 +59,8 @@ export interface TelegramInboundDeps {
   readonly hooks: HookEventSource | undefined
   /** How `/stop` interrupts the running turn; none (the brake alone) by default. */
   readonly sessionController?: SessionController
+  /** `/shot` (F5), shared with the `send_screenshot` tool; without it there is no `/shot`. */
+  readonly screenshots?: CaptureScreenshot
   /** Test seams. */
   readonly fetch?: typeof fetch
   readonly pollTimeoutSeconds?: number
@@ -132,6 +135,7 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
     brake: state.brake,
     stopSession: brake.stop,
     resumeSession: brake.resume,
+    ...(deps.screenshots === undefined ? {} : { screenshots: deps.screenshots }),
   })
   const pipeline = createInboundPipeline({
     claimPairing: new ClaimPairing({
