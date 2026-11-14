@@ -1,0 +1,132 @@
+/**
+ * The guarantee that no outbound text skips redaction is structural: only
+ * `src/composition/outbound.ts` constructs a raw platform gateway, and it
+ * exports nothing but the decorated pipeline. These tests fail if that changes.
+ */
+import { describe, expect, test } from 'bun:test'
+import { readdirSync, readFileSync } from 'node:fs'
+import { join, relative, sep } from 'node:path'
+import { extractImports } from '../../scripts/architecture.ts'
+import { DevChatGateway, type DevReply } from '../../src/adapters/dev/DevChatGateway.ts'
+import { DEV_CHAT_ID } from '../../src/adapters/dev/DevHttpInbound.ts'
+import { TELEGRAM_MAX_MESSAGE_LENGTH } from '../../src/adapters/telegram/TelegramChatGateway.ts'
+import * as outboundModule from '../../src/composition/outbound.ts'
+import { buildOutbound } from '../../src/composition/outbound.ts'
+import { REDACTION_MARK } from '../../src/domain/redaction/SecretRedactor.ts'
+import { FakeClock, FakeSleeper } from '../fakes.ts'
+import { FakeTelegramApi, TEST_TOKEN } from '../fakeTelegram.ts'
+
+const srcRoot = join(import.meta.dir, '..', '..', 'src')
+
+function sourceFiles(): { path: string; source: string }[] {
+  return readdirSync(srcRoot, { recursive: true, encoding: 'utf8' })
+    .filter((entry) => entry.endsWith('.ts'))
+    .map((entry) => ({
+      path: relative(srcRoot, join(srcRoot, entry)).split(sep).join('/'),
+      source: readFileSync(join(srcRoot, entry), 'utf8'),
+    }))
+}
+
+describe('structure', () => {
+  test('buildOutbound is the only runtime export of the outbound module', () => {
+    expect(Object.keys(outboundModule)).toEqual(['buildOutbound'])
+  })
+
+  test('only the outbound module constructs a raw platform gateway', () => {
+    const offenders = sourceFiles()
+      .filter((f) => /new (TelegramChatGateway|DevChatGateway)\(/.test(f.source))
+      .map((f) => f.path)
+    // main.ts creates the dev gateway for its SSE subscribers and hands it to buildOutbound.
+    expect(offenders.sort()).toEqual(['composition/outbound.ts', 'main.ts'])
+    const main = sourceFiles().find((f) => f.path === 'main.ts')?.source ?? ''
+    expect(main).not.toContain('TelegramChatGateway')
+  })
+
+  test('no module but the outbound one imports the Telegram gateway', () => {
+    const importers = sourceFiles()
+      .filter((f) => extractImports(f.source).some((s) => s.endsWith('/TelegramChatGateway.ts')))
+      .map((f) => f.path)
+    expect(importers).toEqual(['composition/outbound.ts'])
+  })
+
+  test('the dev gateway only reaches the reply path through buildOutbound in main.ts', () => {
+    const main = sourceFiles().find((f) => f.path === 'main.ts')?.source ?? ''
+    // devReplies may be passed to buildOutbound (as `dev:`) and to the SSE listener (as `replies:`).
+    const uses = main.match(/\bdevReplies\b/g) ?? []
+    const allowed =
+      main.match(
+        /dev: devReplies|replies: devReplies|devReplies [!=]== undefined|const devReplies/g,
+      ) ?? []
+    expect(uses.length).toBe(allowed.length)
+  })
+})
+
+describe('behaviour', () => {
+  const SECRET = 'Zq8!vR2#pL-0042'
+
+  function setup() {
+    const api = new FakeTelegramApi()
+    const dev = new DevChatGateway()
+    const devReplies: DevReply[] = []
+    dev.subscribe((r) => devReplies.push(r))
+    const chat = buildOutbound({
+      token: TEST_TOKEN,
+      dev,
+      literalSecrets: [SECRET, 'production'],
+      fetch: api.fetch,
+      sleeper: new FakeSleeper(new FakeClock()),
+    })
+    return { api, devReplies, chat }
+  }
+
+  test('telegram gets redacted text, including the bot token itself', async () => {
+    const { api, chat } = setup()
+    const receipt = await chat.sendText(
+      '5000000001',
+      `token ${TEST_TOKEN} and ${SECRET} in production`,
+    )
+    expect(receipt).toEqual({ parts: 1, redactions: 2 })
+    expect(api.callsTo('sendMessage')[0]?.payload.text).toBe(
+      `token ${REDACTION_MARK} and ${REDACTION_MARK} in production`,
+    )
+  })
+
+  test('long text is chunked to the Telegram limit, in order', async () => {
+    const { api, chat } = setup()
+    const paragraph = `${'word '.repeat(700).trim()}`
+    const text = [paragraph, paragraph, paragraph].join('\n\n')
+    const receipt = await chat.sendText('5000000001', text)
+    const sent = api.callsTo('sendMessage').map((c) => c.payload.text ?? '')
+    expect(receipt.parts).toBe(sent.length)
+    expect(sent.length).toBeGreaterThan(1)
+    for (const part of sent) expect(part.length).toBeLessThanOrEqual(TELEGRAM_MAX_MESSAGE_LENGTH)
+    expect(sent.join('\n\n')).toBe(text)
+  })
+
+  test('the dev chat id goes to the dev listener, redacted; everything else to Telegram', async () => {
+    const { api, chat, devReplies } = setup()
+    await chat.sendText(DEV_CHAT_ID, `dev ${SECRET}`)
+    await chat.sendTyping(DEV_CHAT_ID)
+    expect(devReplies).toEqual([{ chat_id: DEV_CHAT_ID, text: `dev ${REDACTION_MARK}` }])
+    expect(api.calls).toEqual([])
+  })
+
+  test('without a token only the dev chat works', async () => {
+    const dev = new DevChatGateway()
+    const chat = buildOutbound({ token: undefined, dev, literalSecrets: [] })
+    await expect(chat.sendText(DEV_CHAT_ID, 'ok')).resolves.toEqual({ parts: 1, redactions: 0 })
+    await expect(chat.sendText('5000000001', 'x')).rejects.toThrow('no chat platform is configured')
+  })
+
+  test('without a dev listener the dev chat id is just another (Telegram) chat', async () => {
+    const api = new FakeTelegramApi()
+    const chat = buildOutbound({
+      token: TEST_TOKEN,
+      dev: undefined,
+      literalSecrets: [],
+      fetch: api.fetch,
+    })
+    await chat.sendText(DEV_CHAT_ID, 'x')
+    expect(api.callsTo('sendMessage')).toHaveLength(1)
+  })
+})

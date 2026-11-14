@@ -1,7 +1,8 @@
 import type { InboundHandler } from '../src/application/pipeline/InboundStep.ts'
 import type { AllowedSenderStore } from '../src/application/ports/AllowedSenderStore.ts'
 import type { AuditEntry, AuditLog } from '../src/application/ports/AuditLog.ts'
-import type { ChatGateway } from '../src/application/ports/ChatGateway.ts'
+import type { ChannelEvent, ChannelPort } from '../src/application/ports/ChannelPort.ts'
+import type { ChatGateway, SendOptions, SendReceipt } from '../src/application/ports/ChatGateway.ts'
 import type { Clock } from '../src/application/ports/Clock.ts'
 import type { InboundPoller, PollingExit } from '../src/application/ports/InboundPoller.ts'
 import type { LogFields, Logger } from '../src/application/ports/Logger.ts'
@@ -14,6 +15,7 @@ import type {
 } from '../src/application/ports/PollerLock.ts'
 import type { RandomSource } from '../src/application/ports/RandomSource.ts'
 import type { SecretHasher } from '../src/application/ports/SecretHasher.ts'
+import type { ActivityState, SessionActivity } from '../src/application/ports/SessionActivity.ts'
 import type { Sleeper } from '../src/application/ports/Sleeper.ts'
 import type { Terminal } from '../src/application/ports/Terminal.ts'
 import type { AllowedSender } from '../src/domain/AllowedSender.ts'
@@ -21,12 +23,44 @@ import type { Pairing } from '../src/domain/Pairing.ts'
 import type { SenderProfile } from '../src/domain/Sender.ts'
 
 export class FakeChatGateway implements ChatGateway {
-  readonly sent: { chatId: string; text: string }[] = []
+  readonly sent: { chatId: string; text: string; options?: SendOptions }[] = []
+  readonly typing: string[] = []
   failWith: Error | undefined
+  /** Fail only from this send on (0-based), e.g. to break a chunked message midway. */
+  failFromCall = 0
+  typingFailWith: Error | undefined
+  #calls = 0
 
-  async sendText(chatId: string, text: string): Promise<void> {
+  async sendText(chatId: string, text: string, options?: SendOptions): Promise<SendReceipt> {
+    const call = this.#calls++
+    if (this.failWith !== undefined && call >= this.failFromCall) throw this.failWith
+    this.sent.push(options === undefined ? { chatId, text } : { chatId, text, options })
+    return { parts: 1, redactions: 0 }
+  }
+
+  async sendTyping(chatId: string): Promise<void> {
+    if (this.typingFailWith !== undefined) throw this.typingFailWith
+    this.typing.push(chatId)
+  }
+}
+
+/** Records channel events; `failWith` makes `emit` reject. */
+export class FakeChannel implements ChannelPort {
+  readonly events: ChannelEvent[] = []
+  failWith: Error | undefined
+  isConnected = true
+
+  async emit(event: ChannelEvent): Promise<void> {
     if (this.failWith !== undefined) throw this.failWith
-    this.sent.push({ chatId, text })
+    this.events.push(event)
+  }
+}
+
+export class FakeSessionActivity implements SessionActivity {
+  constructor(public state: ActivityState = 'unknown') {}
+
+  current(): ActivityState {
+    return this.state
   }
 }
 

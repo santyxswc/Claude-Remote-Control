@@ -10,6 +10,11 @@ export type AuditEvent =
   | 'pairing.declined'
   | 'sender.allowed'
   | 'sender.revoked'
+  | 'message.forwarded'
+  | 'message.rate_limited'
+  | 'reply.sent'
+  | 'reply.refused'
+  | 'reply.failed'
 
 /** Values that are safe to persist: never tokens, codes or message text. */
 export type AuditDetails = Readonly<Record<string, string | number | boolean | null>>
@@ -17,7 +22,7 @@ export type AuditDetails = Readonly<Record<string, string | number | boolean | n
 export interface AuditEntry {
   /** Epoch milliseconds. */
   readonly at: number
-  /** Who caused it: `terminal`, `system` or `telegram:<sender id>`. */
+  /** Who caused it: `terminal`, `system`, `session` (Claude) or `telegram:<sender id>`. */
   readonly actor: string
   readonly event: AuditEvent
   readonly details: AuditDetails

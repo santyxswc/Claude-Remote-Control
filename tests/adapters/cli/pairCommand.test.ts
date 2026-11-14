@@ -47,6 +47,7 @@ function setup() {
         chat,
         messages: en,
         logger,
+        clock: h.clock,
       }),
     },
   }
@@ -57,6 +58,7 @@ function setup() {
   }
   const fromPhone = (sender: typeof ALICE, text: string): InboundMessage => ({
     chatId: sender.id,
+    messageId: '1',
     chatKind: 'private',
     sender,
     text,

@@ -13,7 +13,6 @@ import { realEvery } from './adapters/system/every.ts'
 import { Sha256SecretHasher } from './adapters/system/Sha256SecretHasher.ts'
 import { SystemClock } from './adapters/system/SystemClock.ts'
 import { TimerSleeper } from './adapters/system/TimerSleeper.ts'
-import { TelegramChatGateway } from './adapters/telegram/TelegramChatGateway.ts'
 import { TelegramDeepLinks } from './adapters/telegram/TelegramDeepLinks.ts'
 import { TelegramIdentityProbe } from './adapters/telegram/TelegramIdentityProbe.ts'
 import { TelegramPoller } from './adapters/telegram/TelegramPoller.ts'
@@ -27,6 +26,7 @@ import { InitBot } from './application/use-cases/InitBot.ts'
 import { ListAllowedSenders } from './application/use-cases/ListAllowedSenders.ts'
 import { RevokeSender } from './application/use-cases/RevokeSender.ts'
 import { StartPairing } from './application/use-cases/StartPairing.ts'
+import { buildOutbound } from './composition/outbound.ts'
 
 /**
  * Composition root of the `telegram-bridge` CLI (`init`, `pair`, `access`).
@@ -66,9 +66,11 @@ function pairSession(stores: StateStores): PairSession | undefined {
     pipeline: createInboundPipeline({
       claimPairing: new ClaimPairing({ ...lifecycle, hasher, clock }),
       authorizeSender: new AuthorizeSender(stores.allowed),
-      chat: new TelegramChatGateway(token),
+      // Only the pairing acknowledgement is sent here, still through the redacting pipeline.
+      chat: buildOutbound({ token, dev: undefined, literalSecrets: [] }),
       messages,
       logger,
+      clock,
     }),
   }
 }
