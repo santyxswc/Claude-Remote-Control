@@ -1,9 +1,11 @@
 /**
  * Wires the inbound side of the channel: the Chain of Responsibility from
  * Telegram polling to the session, the button-tap path and the permission
- * relay and the hook listener (F4), under the single-poller lock.
+ * relay, the hook listener (F4) and the `/stop` brake (F6), under the
+ * single-poller lock.
  */
 import type { PermissionRequestHandler } from '../adapters/mcp/McpChannelServer.ts'
+import { NoopSessionController } from '../adapters/session/NoopSessionController.ts'
 import type { StateStores } from '../adapters/storage/openState.ts'
 import { LOCK_HEARTBEAT_MS } from '../adapters/storage/SqlitePollerLock.ts'
 import { type Every, realEvery } from '../adapters/system/every.ts'
@@ -21,9 +23,11 @@ import type { HookEventSource } from '../application/ports/HookEventSource.ts'
 import type { Logger } from '../application/ports/Logger.ts'
 import type { PermissionVerdictPort } from '../application/ports/PermissionVerdictPort.ts'
 import type { PromptGateway } from '../application/ports/PromptGateway.ts'
+import type { SessionController } from '../application/ports/SessionController.ts'
 import { AuthorizeSender } from '../application/use-cases/AuthorizeSender.ts'
 import { ClaimPairing } from '../application/use-cases/ClaimPairing.ts'
 import { HandleInboundMessage } from '../application/use-cases/HandleInboundMessage.ts'
+import { buildBrake } from './brake.ts'
 import { buildHookListener, type HookListener, type SessionTracking } from './hooks.ts'
 import { buildPermissions, type PermissionWiring } from './permissions.ts'
 
@@ -52,6 +56,8 @@ export interface TelegramInboundDeps {
   readonly tracking: SessionTracking
   /** Where hook events arrive; without it there are no notices and activity stays unknown. */
   readonly hooks: HookEventSource | undefined
+  /** How `/stop` interrupts the running turn; none (the brake alone) by default. */
+  readonly sessionController?: SessionController
   /** Test seams. */
   readonly fetch?: typeof fetch
   readonly pollTimeoutSeconds?: number
@@ -110,12 +116,22 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
           logger,
           every,
         })
+  const brake = buildBrake({
+    state,
+    permissions,
+    controller: deps.sessionController ?? new NoopSessionController(),
+    clock,
+    logger,
+  })
   const commands = createCommandRegistry({
     messages,
     botUsername,
     allowed: state.allowed,
     isSessionConnected: () => deps.channel.isConnected,
     pendingPermissions: permissions.pendingCount,
+    brake: state.brake,
+    stopSession: brake.stop,
+    resumeSession: brake.resume,
   })
   const pipeline = createInboundPipeline({
     claimPairing: new ClaimPairing({
@@ -139,6 +155,7 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
       forward,
       botUsername,
       permissionVerdicts: permissions.verdictStep,
+      brake: state.brake,
     }),
   })
   polling = new PollingSupervisor({

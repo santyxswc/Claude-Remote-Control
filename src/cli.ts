@@ -22,14 +22,17 @@ import { AuthorizeSender } from './application/use-cases/AuthorizeSender.ts'
 import { AwaitPairingClaim } from './application/use-cases/AwaitPairingClaim.ts'
 import { ClaimPairing } from './application/use-cases/ClaimPairing.ts'
 import { ConfirmPairing } from './application/use-cases/ConfirmPairing.ts'
+import { EngageBrake } from './application/use-cases/EngageBrake.ts'
 import { InitBot } from './application/use-cases/InitBot.ts'
 import { ListAllowedSenders } from './application/use-cases/ListAllowedSenders.ts'
+import { ResumeSession } from './application/use-cases/ResumeSession.ts'
 import { RevokeSender } from './application/use-cases/RevokeSender.ts'
 import { StartPairing } from './application/use-cases/StartPairing.ts'
 import { buildOutbound } from './composition/outbound.ts'
 
 /**
- * Composition root of the `telegram-bridge` CLI (`init`, `pair`, `access`).
+ * Composition root of the `telegram-bridge` CLI (`init`, `pair`, `access`,
+ * `stop`, `resume`).
  * Unlike `main.ts` this process owns its terminal, so it prints to stdout.
  */
 
@@ -110,6 +113,18 @@ try {
         messages,
         listAllowed: new ListAllowedSenders(stores.allowed),
         revokeSender: new RevokeSender({ allowed: stores.allowed, audit: stores.audit, clock }),
+      }
+    },
+    brake: () => {
+      const stores = openStores()
+      // The terminal gets the outcome from `messages`; the audit row is the record.
+      const quiet = { info() {}, warn() {}, error() {} }
+      const deps = { brake: stores.brake, audit: stores.audit, clock, logger: quiet }
+      return {
+        terminal,
+        messages,
+        engage: new EngageBrake(deps),
+        resume: new ResumeSession(deps),
       }
     },
   })

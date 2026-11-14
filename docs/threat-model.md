@@ -22,7 +22,8 @@ This is the threat table from `docs/plan.md` ("Seguridad"), kept up to date. Sta
 | Stale or double-tapped button | Each button carries the `request_id` from Claude Code; the state machine refuses to resolve twice; the keyboard is removed on resolution | **Implemented (F3).** Button data `p1:<id>:<action>` parsed strictly (`src/application/permissions/callbackData.ts`). `ResolvePermission` stores the decision with compare-and-set before sending the verdict, so a double tap or a racing expiry yields one verdict; every copy is edited and loses its buttons. Expired, resolved and other-session requests answer with a toast and change nothing |
 | Misleading text in a permission preview | `description` and `input_preview` are shown as escaped plain text, without formatting or links | **Implemented (F3).** Prompts are plain text (no `parse_mode`) with link previews disabled, redacted by `RedactingPromptGateway` and fitted to one message keeping the start and the end of the input (the dangerous part of a long command is at its end). Telegram still auto-links bare URLs |
 | Another local process writes to the hooks socket | Socket with mode 0600 inside the user's directory | **Implemented (F4, ADR 0008).** Unix socket `<stateDir>/hooks.sock`, chmod 0600 inside the 0700 state directory (or a short fallback directory that both sides require to be owned by the user and 0700); a named pipe on Windows. Every frame carries an HMAC-SHA256 over its JSON with a 32-byte secret from `<stateDir>/hooks.key` (0600), verified in constant time, so the secret never travels. Frames are size-capped (256 KiB), time-limited (2 s) and bounded in number; rejected ones are counted and logged by reason only. Only the poller listens; never a network socket (`src/adapters/ipc/`) |
-| No record of what was approved | Append-only audit: who, when, what and which verdict | **Implemented (F1-F3).** `audit_log` table with triggers that reject `UPDATE` and `DELETE` (`src/adapters/storage/sqlite.ts`); no update or delete API (`SqliteAuditLog`). Every pairing and allowlist change is audited, without codes, tokens or message text. F2 adds `message.forwarded` (sender id, message id, length), `message.rate_limited`, `reply.sent` (chat id, parts, redaction count), `reply.refused`, `reply.failed`; never message text or secret values. F3 adds `permission.relayed` (tool, risk, rule ids), `permission.confirmation_requested`, `permission.approved` and `permission.denied` (who, tool, risk, button or text), `permission.verdict_failed`, `permission.expired`, `permission.resolved_locally`; never the description or the input |
+| Claude does something harmful and must be stopped now | Panic button `/stop`: a brake flag checked by a `PreToolUse` hook before every tool call, pending permission requests denied, best-effort interrupt; `/resume` releases it | **Implemented (F6, ADR 0003).** `<stateDir>/brake.json` (0600, atomic) read by `src/brakeHook.ts` (synchronous, every tool, node builtins only), which prints `continue: false` plus a `deny`. Missing flag: not braked; present but unreadable: braked. `StopSession` denies every open request of this session once via `ResolvePermission`. While braked, chat messages are not forwarded, new requests are denied unrelayed, and approvals are refused. Escape via `tmux send-keys` only on Linux inside tmux (pane id validated, argument array, timeout). `telegram-bridge stop`/`resume` at the terminal. Only an allowlisted sender can trigger it |
+| No record of what was approved | Append-only audit: who, when, what and which verdict | **Implemented (F1-F3).** `audit_log` table with triggers that reject `UPDATE` and `DELETE` (`src/adapters/storage/sqlite.ts`); no update or delete API (`SqliteAuditLog`). Every pairing and allowlist change is audited, without codes, tokens or message text. F2 adds `message.forwarded` (sender id, message id, length), `message.rate_limited`, `reply.sent` (chat id, parts, redaction count), `reply.refused`, `reply.failed`; never message text or secret values. F3 adds `permission.relayed` (tool, risk, rule ids), `permission.confirmation_requested`, `permission.approved` and `permission.denied` (who, tool, risk, button or text), `permission.verdict_failed`, `permission.expired`, `permission.resolved_locally`; never the description or the input. F6 adds `brake.engaged` (actor, reason length only), `session.stopped` (requests denied, interrupt result), `brake.released`, and `permission.denied` with `via: stop` or `via: brake` |
 
 ## Additional F1 notes
 
@@ -94,6 +95,30 @@ This is the threat table from `docs/plan.md` ("Seguridad"), kept up to date. Sta
   polling process. They are authenticated (same user, same key) but not routed. Notices name the
   project. Busy state is shared, and a `PostToolUse` from another session could close a matching
   pending prompt's buttons; it never sends a verdict.
+
+## Additional F6 notes
+
+- **What the brake guarantees.** No new tool call runs while the flag exists, in any session
+  that resolves the same state directory, on every OS. It does not cut text being generated
+  (except inside tmux on Linux), and it does not undo a tool call already running.
+- **Fail open on a broken install, closed on a doubtful flag.** A missing flag or state
+  directory, or a hook that cannot start or times out (`onFailure: "continue"`), lets calls
+  through. A flag that exists but cannot be read or parsed blocks. Anyone who can delete files in
+  the user's state directory can release the brake, as they could already read the token.
+- **Who can engage it.** Only an allowlisted sender (the command runs after authentication) or
+  the local user through the CLI. A stranger's `/stop` is dropped like any other message. Anyone
+  who controls the owner's Telegram account can also `/resume`, and then approve tools; the F3
+  account-takeover note applies.
+- **Keystroke injection.** The tmux controller sends exactly `Escape` to the pane id inherited
+  from Claude Code, validated as `%<digits>`, as an argument array with no shell and a 2 s
+  timeout. It never targets another pane. Another process that changes `TMUX_PANE` in the
+  channel's environment could aim the Escape at another pane of the same user; it already runs
+  as that user.
+- **Prompts left open by `telegram-bridge stop`.** The CLI cannot reach the channel's prompts.
+  While braked they cannot be approved from the chat, and the terminal dialog stays authoritative.
+- **The reason text.** The owner's optional `/stop` reason is shown at the terminal and stays in
+  the conversation (`stopReason`), so Claude reads it after a resume. It is one line of at most
+  200 characters, never audited and never logged.
 
 ## Known limits and open risks
 

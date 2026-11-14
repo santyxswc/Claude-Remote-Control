@@ -15,6 +15,8 @@ import { DEV_PORT_ENV, parseDevPort } from './adapters/dev/devPort.ts'
 import { RedactingLogger } from './adapters/logging/RedactingLogger.ts'
 import { StderrLogger } from './adapters/logging/StderrLogger.ts'
 import { McpChannelServer } from './adapters/mcp/McpChannelServer.ts'
+import { createSessionController } from './adapters/session/createSessionController.ts'
+import { spawnProcess } from './adapters/session/processRunner.ts'
 import { openState, type StateStores } from './adapters/storage/openState.ts'
 import { defaultStateDir } from './adapters/storage/stateDir.ts'
 import { DotEnvProjectSecrets } from './adapters/system/DotEnvProjectSecrets.ts'
@@ -132,6 +134,13 @@ if (state !== undefined && token === undefined) {
       logger,
       tracking,
       hooks: hookListenerOrNothing(),
+      // tmux on Linux when Claude Code runs in a pane; otherwise /stop relies on the hook brake.
+      sessionController: createSessionController({
+        platform: process.platform,
+        env,
+        run: spawnProcess,
+        logger,
+      }),
     })
   } catch (error) {
     logger.error('telegram setup failed; serving MCP without it', { error })

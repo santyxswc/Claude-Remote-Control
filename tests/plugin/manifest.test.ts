@@ -21,6 +21,7 @@ interface CommandHook {
   args?: string[]
   timeout?: number
   async?: boolean
+  onFailure?: string
 }
 
 interface McpServer {
@@ -72,46 +73,68 @@ describe('plugin.json', () => {
 
 describe('hooks/hooks.json', () => {
   const events = Object.keys(hooksFile.hooks)
+  const hooksOf = (event: string): CommandHook[] =>
+    (hooksFile.hooks[event] ?? []).flatMap((group) => {
+      expect(group.matcher).toBeUndefined() // every tool, every notification type
+      return group.hooks
+    })
 
-  test('registers exactly the events the hook entrypoint handles', () => {
-    expect([...events].sort()).toEqual([...HOOK_EVENT_NAMES].sort())
+  test('registers the brake plus exactly the events the notice entrypoint handles', () => {
+    expect([...events].sort()).toEqual([...HOOK_EVENT_NAMES, 'PreToolUse'].sort())
   })
 
-  test('every hook is exec form: bun, an existing script under the plugin root, its event', () => {
-    for (const event of events) {
-      for (const group of hooksFile.hooks[event] ?? []) {
-        expect(group.matcher).toBeUndefined() // every tool, every notification type
-        for (const hook of group.hooks) {
-          expect(hook.type).toBe('command')
-          expect(hook.command).toBe('bun')
-          const [script, eventArg, ...rest] = hook.args ?? []
-          expect(existsSync(join(root, inPlugin(script ?? '')))).toBe(true)
-          expect(eventArg).toBe(event)
-          expect(rest).toEqual([])
-          expect(hook.async).toBe(true)
-          expect(hook.timeout).toBeLessThanOrEqual(10)
-        }
+  test('notices: async exec form, bun, an existing script under the plugin root, its event', () => {
+    for (const event of HOOK_EVENT_NAMES) {
+      for (const hook of hooksOf(event)) {
+        expect(hook.type).toBe('command')
+        expect(hook.command).toBe('bun')
+        const [script, eventArg, ...rest] = hook.args ?? []
+        expect(inPlugin(script ?? '')).toBe('src/hook.ts')
+        expect(eventArg).toBe(event)
+        expect(rest).toEqual([])
+        expect(hook.async).toBe(true)
+        expect(hook.timeout).toBeLessThanOrEqual(10)
       }
     }
   })
 
-  test('the hook script needs no installed dependency', () => {
-    // Hooks run before `bun install` ever did (it only runs with the server).
-    const visited = new Set<string>()
-    const visit = (file: string): void => {
-      if (visited.has(file)) return
-      visited.add(file)
-      const source = readFileSync(file, 'utf8')
-      for (const [, spec] of source.matchAll(/^import[^'"]*from\s+'([^']+)'/gm)) {
-        if (spec === undefined) continue
-        if (spec.startsWith('.')) {
-          visit(join(file, '..', spec))
-        } else {
-          expect(spec.startsWith('node:')).toBe(true)
+  test('the brake: synchronous (so it can block), short timeout, a crash lets the call through', () => {
+    const [hook, ...others] = hooksOf('PreToolUse')
+    expect(others).toEqual([])
+    expect(hook?.type).toBe('command')
+    expect(hook?.command).toBe('bun')
+    expect((hook?.args ?? []).map(inPlugin)).toEqual(['src/brakeHook.ts'])
+    expect(hook?.async).toBeUndefined()
+    expect(hook?.timeout).toBeLessThanOrEqual(5)
+    // A broken install must not brick the session; a corrupt flag still blocks (ADR 0003).
+    expect(hook?.onFailure).toBe('continue')
+  })
+
+  test.each([['src/hook.ts'], ['src/brakeHook.ts']])(
+    '%s needs no installed dependency',
+    (entry) => {
+      // Hooks run before `bun install` ever did (it only runs with the server).
+      const visited = new Set<string>()
+      const visit = (file: string): void => {
+        if (visited.has(file)) return
+        expect(existsSync(file)).toBe(true)
+        visited.add(file)
+        const source = readFileSync(file, 'utf8')
+        const specs = [
+          ...source.matchAll(/^import[^'"]*from\s+'([^']+)'/gm),
+          ...source.matchAll(/\bimport\(\s*'([^']+)'\s*\)/g),
+        ].map((match) => match[1])
+        for (const spec of specs) {
+          if (spec === undefined) continue
+          if (spec.startsWith('.')) {
+            visit(join(file, '..', spec))
+          } else {
+            expect(spec.startsWith('node:')).toBe(true)
+          }
         }
       }
-    }
-    visit(join(root, 'src', 'hook.ts'))
-    expect(visited.size).toBeGreaterThan(1)
-  })
+      visit(join(root, entry))
+      expect(visited.size).toBeGreaterThan(1)
+    },
+  )
 })

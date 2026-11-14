@@ -1,6 +1,19 @@
 {
-  "description": "telegram-bridge notices (F4): forwards these events to the running channel over local IPC. Each hook exits 0 with no output, also when the bridge is not running.",
+  "description": "telegram-bridge: PreToolUse is the /stop brake (F6): synchronous, it refuses every tool call and stops Claude while the brake flag is set, and prints nothing otherwise. The other events are notices (F4): forwarded to the running channel over local IPC, each exits 0 with no output, also when the bridge is not running.",
   "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/src/brakeHook.ts"],
+            "timeout": 5,
+            "onFailure": "continue"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [

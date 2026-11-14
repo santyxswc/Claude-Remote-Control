@@ -1,6 +1,7 @@
 import type { InboundHandler } from '../src/application/pipeline/InboundStep.ts'
 import type { AllowedSenderStore } from '../src/application/ports/AllowedSenderStore.ts'
 import type { AuditEntry, AuditLog } from '../src/application/ports/AuditLog.ts'
+import type { BrakeFlag, BrakeStatus } from '../src/application/ports/BrakeFlag.ts'
 import type { ChannelEvent, ChannelPort } from '../src/application/ports/ChannelPort.ts'
 import type { ChatGateway, SendOptions, SendReceipt } from '../src/application/ports/ChatGateway.ts'
 import type { Clock } from '../src/application/ports/Clock.ts'
@@ -22,9 +23,14 @@ import type { PromptGateway, PromptKeyboard } from '../src/application/ports/Pro
 import type { RandomSource } from '../src/application/ports/RandomSource.ts'
 import type { SecretHasher } from '../src/application/ports/SecretHasher.ts'
 import type { ActivityState, SessionActivity } from '../src/application/ports/SessionActivity.ts'
+import type {
+  InterruptResult,
+  SessionController,
+} from '../src/application/ports/SessionController.ts'
 import type { Sleeper } from '../src/application/ports/Sleeper.ts'
 import type { Terminal } from '../src/application/ports/Terminal.ts'
 import type { AllowedSender } from '../src/domain/AllowedSender.ts'
+import type { BrakeRecord } from '../src/domain/brake/BrakeRecord.ts'
 import type { Pairing } from '../src/domain/Pairing.ts'
 import type { PermissionRequest, PromptRef } from '../src/domain/permissions/PermissionRequest.ts'
 import type { SenderProfile } from '../src/domain/Sender.ts'
@@ -421,3 +427,37 @@ export class FakeVerdicts implements PermissionVerdictPort {
 }
 
 export const BOB: SenderProfile = { id: '222222222', username: undefined, displayName: 'Bob B' }
+
+/** The brake in memory; `unreadable` simulates a corrupt flag file. */
+export class InMemoryBrakeFlag implements BrakeFlag {
+  record: BrakeRecord | undefined
+  unreadable = false
+
+  engage(record: BrakeRecord): void {
+    this.record = record
+    this.unreadable = false
+  }
+
+  release(): boolean {
+    const was = this.record !== undefined || this.unreadable
+    this.record = undefined
+    this.unreadable = false
+    return was
+  }
+
+  status(): BrakeStatus {
+    if (this.unreadable) return { engaged: true, record: undefined }
+    return this.record === undefined ? { engaged: false } : { engaged: true, record: this.record }
+  }
+}
+
+export class FakeSessionController implements SessionController {
+  calls = 0
+  constructor(public result: InterruptResult | Error = 'unavailable') {}
+
+  async interrupt(): Promise<InterruptResult> {
+    this.calls += 1
+    if (this.result instanceof Error) throw this.result
+    return this.result
+  }
+}

@@ -1,5 +1,6 @@
 import type { StatusView } from '../i18n/messages.ts'
 import type { AllowedSenderStore } from '../ports/AllowedSenderStore.ts'
+import type { BrakeFlag } from '../ports/BrakeFlag.ts'
 import type { ChatCommand, CommandContext } from './ChatCommand.ts'
 
 export interface StatusCommandDeps {
@@ -12,6 +13,7 @@ export interface StatusCommandDeps {
   readonly isSessionConnected: () => boolean
   /** Open permission requests of this session. */
   readonly pendingPermissions: () => number
+  readonly brake: Pick<BrakeFlag, 'status'>
 }
 
 /**
@@ -34,7 +36,16 @@ export class StatusCommand implements ChatCommand {
         pairedSince: paired === undefined ? undefined : new Date(paired.addedAt).toISOString(),
         sessionConnected: this.deps.isSessionConnected(),
         pendingPermissions: this.deps.pendingPermissions(),
+        brake: this.#brake(),
       }),
     )
+  }
+
+  #brake(): StatusView['brake'] {
+    const status = this.deps.brake.status()
+    if (!status.engaged) return { engaged: false }
+    return status.record === undefined
+      ? { engaged: true }
+      : { engaged: true, since: new Date(status.record.engagedAt).toISOString() }
   }
 }

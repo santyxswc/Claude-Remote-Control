@@ -12,9 +12,10 @@ Code session. The approved design is `docs/plan.md` (Spanish); each flow has its
 - `src/application` imports only `src/domain`, `src/application` and `zod`.
 - The application layer defines the ports; adapters implement them. Keep ports small.
 - One use case per file, with a single reason to change.
-- `src/main.ts` (the channel), `src/cli.ts` (the `telegram-bridge` CLI) and `src/hook.ts` (the
-  hook entrypoint) are the only composition roots and wire everything by hand (no DI container). Larger wiring lives in small
-  factory modules under `src/composition/`, used only by those roots.
+- `src/main.ts` (the channel), `src/cli.ts` (the `telegram-bridge` CLI), `src/hook.ts` (the
+  notice hook entrypoint) and `src/brakeHook.ts` (the `PreToolUse` brake) are the only composition
+  roots and wire everything by hand (no DI container). Larger wiring lives in small factory modules
+  under `src/composition/`, used only by those roots.
 - Outbound text always goes through `buildOutbound()` (`src/composition/outbound.ts`): redaction,
   then chunking (prompts with buttons: redaction, then fitting to one message). Never construct
   `TelegramChatGateway` anywhere else; a test enforces it.
@@ -35,10 +36,14 @@ Code session. The approved design is `docs/plan.md` (Spanish); each flow has its
   fast (node builtins only; a test enforces it) and fail open: exit 0, nothing on stdout,
   diagnostics only with `TELEGRAM_BRIDGE_DEBUG=1` on stderr. Hook IPC is a Unix socket or a
   named pipe with an HMAC per frame (ADR 0008), never a network socket.
+- `src/brakeHook.ts` runs synchronously before every tool call. Its no-brake path must stay one
+  failed `open` of `<stateDir>/brake.json` (no stdin, no IPC, node builtins only). Missing flag:
+  exit 0, nothing on stdout; flag present but unreadable: still braked (ADR 0003).
 - Windows is a first-class target: build paths with `node:path`, never hardcode `/` paths, `~`,
   Unix sockets (except behind `src/adapters/ipc/endpoint.ts`) or POSIX-only tools.
 - The repository is also the plugin (ADR 0009): `.claude-plugin/plugin.json` keeps the version of
-  `package.json`, and `hooks/hooks.json` lists exactly the events `src/hook.ts` handles.
+  `package.json`, and `hooks/hooks.json` lists exactly the events `src/hook.ts` handles plus the
+  synchronous `PreToolUse` brake.
 - The channel contract is a research preview. Keep everything contract-specific inside
   `src/adapters/mcp`, and check the official docs rather than memory before changing it.
 - Stay on `@modelcontextprotocol/sdk` 1.x: Claude Code does not register a channel server that
@@ -52,4 +57,5 @@ Code session. The approved design is `docs/plan.md` (Spanish); each flow has its
   - `bun run check`: lint, typecheck, architecture check and tests (what CI runs)
   - `bun run format`: apply Biome formatting and safe fixes
   - `bun test`: tests only
-  - `bun run bridge -- <command>`: the CLI (`init`, `pair`, `access list`, `access revoke <id>`)
+  - `bun run bridge -- <command>`: the CLI (`init`, `pair`, `access list`, `access revoke <id>`,
+    `stop [reason]`, `resume`)

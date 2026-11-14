@@ -16,5 +16,8 @@ export const DROPPED_LOG_WINDOW_MS = 60_000
 /** At most one "only text is supported" reply per sender per window (an album is many messages). */
 export const UNSUPPORTED_NOTICE_WINDOW_MS = 60_000
 
+/** At most one "the brake is engaged, not forwarded" reply per sender per window. */
+export const BRAKE_NOTICE_WINDOW_MS = 60_000
+
 /** Throttles forget keys beyond this many, so a flood of distinct ids cannot grow memory forever. */
 export const THROTTLE_MAX_KEYS = 1024
