@@ -62,6 +62,16 @@ test('migrates a database from before F9', () => {
   old.run('DROP TABLE status_messages')
   old.run('DROP TABLE memory_proposals')
   old.run('DROP TABLE voice_transcripts')
+  for (const table of [
+    'hub_group',
+    'hub_topics',
+    'hub_sessions',
+    'hub_messages',
+    'hub_status_messages',
+    'group_bindings',
+  ]) {
+    old.run(`DROP TABLE ${table}`)
+  }
   // Before F9: migrations 1 to 3 (F9 is migration 4).
   old.run('PRAGMA user_version = 3')
   old.close()

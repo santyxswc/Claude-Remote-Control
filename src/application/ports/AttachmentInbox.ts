@@ -20,6 +20,9 @@ export interface AttachmentInbox {
   list(): Promise<readonly InboxEntry[]>
   /** Removes files of this session's inbox by the names `list` gave. Never rejects. */
   remove(names: readonly string[]): Promise<number>
-  /** Removes the inboxes of every other session (ADR 0007: they belong to the poller). */
-  removeOtherSessions(): Promise<number>
+  /**
+   * Removes the inboxes of every other session (ADR 0007: they belong to the
+   * poller), or only of the sessions in only (F14: ended sessions of this topic).
+   */
+  removeOtherSessions(only?: ReadonlySet<string>): Promise<number>
 }

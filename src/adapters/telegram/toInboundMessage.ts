@@ -38,6 +38,30 @@ export function toInboundMessage(message: Message): InboundMessage {
             size: message.voice.file_size,
           },
         }),
+    ...groupFields(message),
+  }
+}
+
+/**
+ * F14, groups only (a private chat gets none of these, so its mapping is
+ * unchanged). `message_thread_id` is trusted only with `is_topic_message`:
+ * replies in a supergroup carry a thread id without being in a topic.
+ */
+function groupFields(message: Message): {
+  threadId?: string
+  onBehalfOfChat?: true
+  isForum?: true
+  chatTitle?: string
+} {
+  if (message.chat.type === 'private') return {}
+  const chat = message.chat as { is_forum?: boolean; title?: string }
+  return {
+    ...(message.is_topic_message === true && message.message_thread_id !== undefined
+      ? { threadId: String(message.message_thread_id) }
+      : {}),
+    ...(message.sender_chat === undefined ? {} : { onBehalfOfChat: true as const }),
+    ...(chat.is_forum === true ? { isForum: true as const } : {}),
+    ...(chat.title === undefined ? {} : { chatTitle: sanitizeDisplayText(chat.title) }),
   }
 }
 
@@ -72,6 +96,8 @@ function toAttachment(message: Message): InboundAttachment | undefined {
 /** Maps a button tap. A tap on a message from an inline query has no chat and gets none. */
 export function toInboundCallback(query: CallbackQuery): InboundCallback {
   const chat = query.message?.chat
+  // An inaccessible message (date 0) carries no topic fields: no thread, so the hub refuses it.
+  const tapped = query.message as { is_topic_message?: boolean; message_thread_id?: number }
   return {
     id: query.id,
     chatId: chat === undefined ? undefined : String(chat.id),
@@ -79,6 +105,12 @@ export function toInboundCallback(query: CallbackQuery): InboundCallback {
     ...(query.message === undefined ? {} : { messageId: String(query.message.message_id) }),
     sender: toSender(query.from),
     data: query.data,
+    ...(chat !== undefined &&
+    chat.type !== 'private' &&
+    tapped.is_topic_message === true &&
+    tapped.message_thread_id !== undefined
+      ? { threadId: String(tapped.message_thread_id) }
+      : {}),
   }
 }
 

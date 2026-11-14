@@ -8,6 +8,13 @@
  *   status:  RedactingStatusGateway (redacted, then fitted to one message) -> route -> Telegram
  *   charts:  RedactingChartRenderer (every string in the spec redacted) -> chart renderer
  *            (the PNG it draws then goes out through the image pipeline above)
+ *   topics:  RedactingTopicGateway (name redacted and fitted) -> Telegram (F14, the hub only)
+ *
+ * In hub mode (F14) a session's channel is a spoke: its 	ransport is the
+ * IPC proxy to the hub instead of Telegram, so its text is redacted and
+ * chunked here, in the spoke, before it leaves the process. The hub runs
+ * uildOutbound too, with the token: the raw gateway exists only there,
+ * behind the same decorators, and is never reachable by a spoke.
  *
  * This module is the only place that constructs the raw platform gateway,
  * and `buildOutbound` is its only export, so nothing in the app can get hold
@@ -28,6 +35,7 @@ import { RedactingDocumentGateway } from '../application/outbound/RedactingDocum
 import { RedactingImageGateway } from '../application/outbound/RedactingImageGateway.ts'
 import { RedactingPromptGateway } from '../application/outbound/RedactingPromptGateway.ts'
 import { RedactingStatusGateway } from '../application/outbound/RedactingStatusGateway.ts'
+import { RedactingTopicGateway } from '../application/outbound/RedactingTopicGateway.ts'
 import type { ChartRenderer, RenderedChart } from '../application/ports/ChartRenderer.ts'
 import type { ChatGateway, SendOptions, SendReceipt } from '../application/ports/ChatGateway.ts'
 import type {
@@ -35,6 +43,7 @@ import type {
   DocumentReceipt,
   OutboundDocument,
 } from '../application/ports/DocumentGateway.ts'
+import type { ForumTopicGateway } from '../application/ports/ForumTopicGateway.ts'
 import type { ImageGateway, OutboundImage } from '../application/ports/ImageGateway.ts'
 import type {
   PromptGateway,
@@ -60,26 +69,40 @@ export interface OutboundOptions {
    * so the renderer is wrapped here: it only ever sees a redacted spec.
    */
   readonly charts?: ChartRenderer
+  /**
+   * F14, a spoke: where decorated content goes instead of Telegram (the IPC
+   * proxy to the hub). The token, if given, is still redacted.
+   */
+  readonly transport?: OutboundTransport
   /** Test seams for the Telegram adapter. */
   readonly fetch?: typeof fetch
   readonly sleeper?: Sleeper
 }
+
+/** What a platform (Telegram, or the hub proxy of a spoke) offers the decorators. */
+export type OutboundTransport = ChatGateway &
+  PromptGateway &
+  ImageGateway &
+  DocumentGateway &
+  StatusMessageGateway
 
 export type Outbound = ChatGateway &
   PromptGateway &
   ImageGateway &
   DocumentGateway &
   StatusMessageGateway &
-  ChartRenderer
+  ChartRenderer &
+  ForumTopicGateway
 
 export function buildOutbound(options: OutboundOptions): Outbound {
-  const telegram =
-    options.token === undefined
+  const raw =
+    options.transport !== undefined || options.token === undefined
       ? undefined
       : new TelegramChatGateway(options.token, {
           ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
           ...(options.sleeper === undefined ? {} : { sleeper: options.sleeper }),
         })
+  const telegram: OutboundTransport | undefined = options.transport ?? raw
   const redactor = createSecretRedactor(
     options.token === undefined
       ? options.literalSecrets
@@ -97,6 +120,7 @@ export function buildOutbound(options: OutboundOptions): Outbound {
     new RedactingDocumentGateway(routed, redactor, TELEGRAM_MAX_CAPTION_LENGTH),
     new RedactingStatusGateway(routed, redactor, TELEGRAM_MAX_MESSAGE_LENGTH),
     options.charts === undefined ? undefined : new RedactingChartRenderer(options.charts, redactor),
+    raw === undefined ? undefined : new RedactingTopicGateway(raw, redactor),
   )
 }
 
@@ -108,7 +132,8 @@ class OutboundGateway
     ImageGateway,
     DocumentGateway,
     StatusMessageGateway,
-    ChartRenderer
+    ChartRenderer,
+    ForumTopicGateway
 {
   constructor(
     private readonly chat: ChatGateway,
@@ -117,7 +142,13 @@ class OutboundGateway
     private readonly documents: DocumentGateway,
     private readonly status: StatusMessageGateway,
     private readonly charts: ChartRenderer | undefined,
+    private readonly topics: ForumTopicGateway | undefined,
   ) {}
+
+  async createTopic(chatId: string, name: string): Promise<string> {
+    if (this.topics === undefined) throw new Error('forum topics need the bot token (the hub)')
+    return this.topics.createTopic(chatId, name)
+  }
 
   async renderChart(
     spec: JsonObject,
@@ -196,7 +227,7 @@ class RoutingGateway
   implements ChatGateway, PromptGateway, ImageGateway, DocumentGateway, StatusMessageGateway
 {
   constructor(
-    private readonly telegram: TelegramChatGateway | undefined,
+    private readonly telegram: OutboundTransport | undefined,
     private readonly dev: ChatGateway | undefined,
   ) {}
 
@@ -253,7 +284,7 @@ class RoutingGateway
     return this.#telegram()
   }
 
-  #telegram(): TelegramChatGateway {
+  #telegram(): OutboundTransport {
     if (this.telegram !== undefined) return this.telegram
     throw new Error(
       'no chat platform is configured for this chat; run `bun run bridge -- init`, or use the dev listener',

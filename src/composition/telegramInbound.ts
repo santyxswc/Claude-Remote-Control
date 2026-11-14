@@ -5,10 +5,16 @@
  * `ask_choice` and `/skills` (F7), `/diff` and its buttons (F8), the pinned
  * status (F9), incoming files (F10), `/wrap` with its memory proposals
  * (F12) and voice notes (F13), under the single-poller lock.
+ *
+ * In hub mode (F14) the same wiring runs as a spoke: `spoke` replaces the
+ * poller and its lock, the hub's routing replaces Telegram, and this
+ * session's topic is "the chat". Nothing else changes.
  */
+import type { SpokeLink } from '../adapters/hub/SpokeLink.ts'
 import type { PermissionRequestHandler } from '../adapters/mcp/McpChannelServer.ts'
 import { NoopSessionController } from '../adapters/session/NoopSessionController.ts'
 import type { StateStores } from '../adapters/storage/openState.ts'
+import { SqliteTopicStatusMessageStore } from '../adapters/storage/SqliteHubStores.ts'
 import { LOCK_HEARTBEAT_MS } from '../adapters/storage/SqlitePollerLock.ts'
 import { type Every, realEvery } from '../adapters/system/every.ts'
 import { Sha256SecretHasher } from '../adapters/system/Sha256SecretHasher.ts'
@@ -38,6 +44,7 @@ import type { SkillFiles } from '../application/ports/SkillFiles.ts'
 import type { StatusMessageGateway } from '../application/ports/StatusMessageGateway.ts'
 import type { Transcriber } from '../application/ports/Transcriber.ts'
 import { SkillsMenu } from '../application/skills/SkillsMenu.ts'
+import { ApplyHubBrake } from '../application/use-cases/ApplyHubBrake.ts'
 import { AuthorizeSender } from '../application/use-cases/AuthorizeSender.ts'
 import type { CaptureScreenshot } from '../application/use-cases/CaptureScreenshot.ts'
 import { ClaimPairing } from '../application/use-cases/ClaimPairing.ts'
@@ -106,6 +113,12 @@ export interface TelegramInboundDeps {
    * `CLAUDE.md` proposals; without it there is no `/wrap`.
    */
   readonly projectDir?: string
+  /**
+   * F14, hub mode: this session is a spoke. Its link replaces the Telegram
+   * poller and the poller lock (a spoke never polls or sends by itself); pass
+   * `link.hooks` as `hooks` and `link.transport` to `buildOutbound`.
+   */
+  readonly spoke?: SpokeLink
   /** Test seams. */
   readonly fetch?: typeof fetch
   readonly pollTimeoutSeconds?: number
@@ -127,8 +140,9 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
   const { state, chat, messages, clock, logger } = deps
   const every = deps.every ?? realEvery
   const botUsername = state.identities.load()?.username
+  const { spoke } = deps
   let polling: PollingSupervisor | undefined
-  const isPolling = () => polling?.isPolling === true
+  const isPolling = () => (spoke === undefined ? polling?.isPolling === true : spoke.isPolling)
   const permissions = buildPermissions({
     state,
     outbound: chat,
@@ -160,6 +174,10 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
   const statusMessage = buildStatusMessage({
     state,
     gateway: chat,
+    // A spoke shares the database with the others: its status rows are scoped to its topic.
+    ...(spoke === undefined
+      ? {}
+      : { store: new SqliteTopicStatusMessageStore(state.db, () => spoke.topicId()) }),
     session: permissions.session,
     pendingPermissions: permissions.pendingCount,
     project: deps.project,
@@ -219,6 +237,7 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
           messages,
           clock,
           logger,
+          ...(spoke === undefined ? {} : { source: spoke.attachments }),
           ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
         })
   const voice: VoiceWiring | undefined =
@@ -235,6 +254,7 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
           maxUploadBytes: deps.attachments.maxBytes,
           clock,
           logger,
+          ...(spoke === undefined ? {} : { source: spoke.attachments }),
           ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
         })
   const listSkills =
@@ -353,52 +373,92 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
     clock,
     logger,
   })
-  polling = new PollingSupervisor({
-    lock: state.lock,
-    poller: new TelegramPoller({
-      token: deps.token,
-      logger,
-      isUrgent: (message) => isUrgentCommand(message.text),
-      ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
-      ...(deps.pollTimeoutSeconds === undefined
-        ? {}
-        : { pollTimeoutSeconds: deps.pollTimeoutSeconds }),
-    }),
-    handler: pipeline,
-    callbackHandler: (callback) => taps.handle(callback),
-    // Requests, choices and inboxes of an earlier poller can no longer be answered or read here.
-    onPollingStarted: () => {
-      void guarded(logger, 'expiring orphaned permission requests', () =>
-        permissions.expire.expireOrphans(),
+  /**
+   * Requests, choices and inboxes of an earlier poller can no longer be
+   * answered or read here. A spoke cleans up only after the ended sessions
+   * of its own topic (`only`): every other session belongs to someone else.
+   */
+  const onPollingStarted = (only?: ReadonlySet<string>): void => {
+    void guarded(logger, 'expiring orphaned permission requests', () =>
+      permissions.expire.expireOrphans(only),
+    )
+    void guarded(logger, 'cancelling orphaned choices', () => choices.expire.expireOrphans(only))
+    if (memory !== undefined) {
+      void guarded(logger, 'cancelling orphaned memory proposals', () =>
+        memory.expire.expireOrphans(only),
       )
-      void guarded(logger, 'cancelling orphaned choices', () => choices.expire.expireOrphans())
-      if (memory !== undefined) {
-        void guarded(logger, 'cancelling orphaned memory proposals', () =>
-          memory.expire.expireOrphans(),
+    }
+    if (attachments !== undefined) {
+      void guarded(logger, 'sweeping the inbox', async () => {
+        await attachments.sweep.orphans(only)
+        await attachments.sweep.execute()
+      })
+    }
+    if (voice !== undefined) {
+      void guarded(logger, 'cancelling orphaned voice transcripts', () =>
+        voice.expire.expireOrphans(only),
+      )
+      void guarded(logger, 'sweeping voice workspaces', () => voice.sweepScratch())
+    }
+    hooks?.onPollingStarted()
+    statusMessage.update.resume()
+  }
+  let feed: { start(): void; stop(): Promise<void> }
+  if (spoke === undefined) {
+    polling = new PollingSupervisor({
+      lock: state.lock,
+      poller: new TelegramPoller({
+        token: deps.token,
+        logger,
+        isUrgent: (message) => isUrgentCommand(message.text),
+        ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
+        ...(deps.pollTimeoutSeconds === undefined
+          ? {}
+          : { pollTimeoutSeconds: deps.pollTimeoutSeconds }),
+      }),
+      handler: pipeline,
+      callbackHandler: (callback) => taps.handle(callback),
+      onPollingStarted: () => onPollingStarted(),
+      onPollingStopped: () => hooks?.onPollingStopped(),
+      logger,
+      role: 'channel',
+      heartbeatMs: LOCK_HEARTBEAT_MS,
+      retryMs: LOCK_RETRY_MS,
+      every,
+    })
+    feed = polling
+  } else {
+    // F14: the hub engaged the brake file already; this session denies its own prompts.
+    const hubBrake = new ApplyHubBrake({
+      brake: state.brake,
+      store: state.permissions,
+      resolve: permissions.resolve,
+      controller: deps.sessionController ?? new NoopSessionController(),
+      audit: state.audit,
+      clock,
+      logger,
+      session: permissions.session,
+    })
+    spoke.attach({
+      handler: pipeline,
+      callbackHandler: (callback) => taps.handle(callback),
+      onBrake: async (sender) => {
+        const report = await hubBrake.execute(sender)
+        await chat.sendText(
+          sender.id,
+          messages.stopReport({
+            brake: 'engaged',
+            since: report.since === undefined ? undefined : new Date(report.since).toISOString(),
+            denied: report.denied,
+            interrupt: report.interrupt,
+          }),
         )
-      }
-      if (attachments !== undefined) {
-        void guarded(logger, 'sweeping the inbox', async () => {
-          await attachments.sweep.orphans()
-          await attachments.sweep.execute()
-        })
-      }
-      if (voice !== undefined) {
-        void guarded(logger, 'cancelling orphaned voice transcripts', () =>
-          voice.expire.expireOrphans(),
-        )
-        void guarded(logger, 'sweeping voice workspaces', () => voice.sweepScratch())
-      }
-      hooks?.onPollingStarted()
-      statusMessage.update.resume()
-    },
-    onPollingStopped: () => hooks?.onPollingStopped(),
-    logger,
-    role: 'channel',
-    heartbeatMs: LOCK_HEARTBEAT_MS,
-    retryMs: LOCK_RETRY_MS,
-    every,
-  })
+      },
+      onPollingStarted: (registration) => onPollingStarted(new Set(registration.endedSessions)),
+      onPollingStopped: () => hooks?.onPollingStopped(),
+    })
+    feed = spoke
+  }
 
   let sweeping = false
   const cancelSweep = every(PERMISSION_SWEEP_MS, () => {
@@ -420,8 +480,8 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
           void guarded(logger, 'inbox sweep', () => attachments.sweep.execute())
         })
 
-  polling.start()
-  const supervisor = polling
+  feed.start()
+  const supervisor = feed
   return {
     permissions,
     choices,

@@ -6,6 +6,10 @@ import type {
   DocumentReceipt,
   OutboundDocument,
 } from '../../application/ports/DocumentGateway.ts'
+import {
+  type ForumTopicGateway,
+  TopicGoneError,
+} from '../../application/ports/ForumTopicGateway.ts'
 import type { ImageGateway, OutboundImage } from '../../application/ports/ImageGateway.ts'
 import type { PromptGateway, PromptKeyboard } from '../../application/ports/PromptGateway.ts'
 import type { Sleeper } from '../../application/ports/Sleeper.ts'
@@ -14,6 +18,7 @@ import {
   type StatusMessageGateway,
   StatusMessageGoneError,
 } from '../../application/ports/StatusMessageGateway.ts'
+import { parseTarget } from '../../domain/hub/conversationTarget.ts'
 import type { PromptRef } from '../../domain/permissions/PermissionRequest.ts'
 import { TimerSleeper } from '../system/TimerSleeper.ts'
 import { describeTelegramError, TelegramCallError } from './redact.ts'
@@ -61,7 +66,13 @@ export interface TelegramChatGatewayOptions {
  * it wrapped in the redacting (and, for plain text, chunking) decorators.
  */
 export class TelegramChatGateway
-  implements ChatGateway, PromptGateway, ImageGateway, DocumentGateway, StatusMessageGateway
+  implements
+    ChatGateway,
+    PromptGateway,
+    ImageGateway,
+    DocumentGateway,
+    StatusMessageGateway,
+    ForumTopicGateway
 {
   readonly #api: Api
   readonly #uploads: Api
@@ -78,9 +89,11 @@ export class TelegramChatGateway
 
   async sendText(chatId: string, text: string, options?: SendOptions): Promise<SendReceipt> {
     const replyTo = options?.replyTo
+    const target = toTarget(chatId)
     await this.#call(() =>
-      this.#api.sendMessage(chatId, text, {
+      this.#api.sendMessage(target.chat, text, {
         ...NO_PREVIEW,
+        ...target.thread,
         ...(replyTo === undefined
           ? {}
           : {
@@ -93,15 +106,21 @@ export class TelegramChatGateway
 
   async sendTyping(chatId: string): Promise<void> {
     try {
-      await this.#api.sendChatAction(chatId, 'typing')
+      const target = toTarget(chatId)
+      await this.#api.sendChatAction(target.chat, 'typing', target.thread)
     } catch (error) {
       throw new TelegramCallError(describeTelegramError(error, this.#token))
     }
   }
 
   async sendPrompt(chatId: string, text: string, keyboard: PromptKeyboard): Promise<PromptRef> {
+    const target = toTarget(chatId)
     const sent = await this.#call(() =>
-      this.#api.sendMessage(chatId, text, { ...NO_PREVIEW, reply_markup: toMarkup(keyboard) }),
+      this.#api.sendMessage(target.chat, text, {
+        ...NO_PREVIEW,
+        ...target.thread,
+        reply_markup: toMarkup(keyboard),
+      }),
     )
     return { chatId, messageId: String(sent.message_id) }
   }
@@ -110,7 +129,7 @@ export class TelegramChatGateway
   async editPrompt(ref: PromptRef, text: string, keyboard: PromptKeyboard): Promise<void> {
     try {
       await this.#call(() =>
-        this.#api.editMessageText(ref.chatId, Number(ref.messageId), text, {
+        this.#api.editMessageText(toTarget(ref.chatId).chat, Number(ref.messageId), text, {
           ...NO_PREVIEW,
           reply_markup: toMarkup(keyboard),
         }),
@@ -132,10 +151,11 @@ export class TelegramChatGateway
   /** Multipart upload from the local file; a fresh `InputFile` per attempt, plain-text caption. */
   async sendImage(chatId: string, image: OutboundImage, caption: string): Promise<void> {
     const file = () => new InputFile(image.path, image.filename)
+    const target = toTarget(chatId)
     await this.#call<unknown>(() =>
       image.as === 'photo'
-        ? this.#uploads.sendPhoto(chatId, file(), { caption })
-        : this.#uploads.sendDocument(chatId, file(), { caption }),
+        ? this.#uploads.sendPhoto(target.chat, file(), { caption, ...target.thread })
+        : this.#uploads.sendDocument(target.chat, file(), { caption, ...target.thread }),
     )
   }
 
@@ -146,16 +166,25 @@ export class TelegramChatGateway
     caption: string,
   ): Promise<DocumentReceipt> {
     const bytes = new TextEncoder().encode(document.text)
+    const target = toTarget(chatId)
     await this.#call<unknown>(() =>
-      this.#uploads.sendDocument(chatId, new InputFile(bytes, document.filename), { caption }),
+      this.#uploads.sendDocument(target.chat, new InputFile(bytes, document.filename), {
+        caption,
+        ...target.thread,
+      }),
     )
     return { redactions: 0, bytes: bytes.length, cut: false }
   }
 
   /** The pinned status (F9): silent, no link preview, never retried after a 429. */
   async sendStatus(chatId: string, text: string): Promise<PromptRef> {
+    const target = toTarget(chatId)
     const sent = await this.#once(() =>
-      this.#api.sendMessage(chatId, text, { ...NO_PREVIEW, disable_notification: true }),
+      this.#api.sendMessage(target.chat, text, {
+        ...NO_PREVIEW,
+        ...target.thread,
+        disable_notification: true,
+      }),
     )
     return { chatId, messageId: String(sent.message_id) }
   }
@@ -163,7 +192,12 @@ export class TelegramChatGateway
   async editStatus(ref: PromptRef, text: string): Promise<void> {
     try {
       await this.#once(() =>
-        this.#api.editMessageText(ref.chatId, Number(ref.messageId), text, NO_PREVIEW),
+        this.#api.editMessageText(
+          toTarget(ref.chatId).chat,
+          Number(ref.messageId),
+          text,
+          NO_PREVIEW,
+        ),
       )
     } catch (error) {
       if (error instanceof TelegramCallError && /message is not modified/i.test(error.message)) {
@@ -176,12 +210,22 @@ export class TelegramChatGateway
   /** Bot API: "Notifications are always disabled in channels and private chats"; asked anyway. */
   async pinStatus(ref: PromptRef): Promise<void> {
     await this.#once(() =>
-      this.#api.pinChatMessage(ref.chatId, Number(ref.messageId), { disable_notification: true }),
+      this.#api.pinChatMessage(toTarget(ref.chatId).chat, Number(ref.messageId), {
+        disable_notification: true,
+      }),
     )
   }
 
   async unpinStatus(ref: PromptRef): Promise<void> {
-    await this.#once(() => this.#api.unpinChatMessage(ref.chatId, Number(ref.messageId)))
+    await this.#once(() =>
+      this.#api.unpinChatMessage(toTarget(ref.chatId).chat, Number(ref.messageId)),
+    )
+  }
+
+  /** F14: a topic in the hub's forum supergroup; the decorator has redacted and fitted the name. */
+  async createTopic(chatId: string, name: string): Promise<string> {
+    const topic = await this.#call(() => this.#api.createForumTopic(chatId, name))
+    return String(topic.message_thread_id)
   }
 
   /** One attempt: a 429 is `StatusFloodWaitError`, a vanished message `StatusMessageGoneError`. */
@@ -194,6 +238,7 @@ export class TelegramChatGateway
       if (error instanceof GrammyError && MESSAGE_GONE.test(error.description)) {
         throw new StatusMessageGoneError()
       }
+      if (isTopicGone(error)) throw new TopicGoneError()
       throw new TelegramCallError(describeTelegramError(error, this.#token))
     }
   }
@@ -203,6 +248,7 @@ export class TelegramChatGateway
       try {
         return await send()
       } catch (error) {
+        if (isTopicGone(error)) throw new TopicGoneError()
         const wait = floodWaitSeconds(error)
         if (wait === undefined || attempt >= MAX_FLOOD_RETRIES || wait > MAX_RETRY_AFTER_SECONDS) {
           throw new TelegramCallError(describeTelegramError(error, this.#token))
@@ -210,6 +256,29 @@ export class TelegramChatGateway
         await this.#sleeper.sleep(wait * 1000)
       }
     }
+  }
+}
+
+/** Bot API errors that mean the forum topic was deleted (F14). */
+const TOPIC_GONE = /message thread not found|TOPIC_DELETED|TOPIC_ID_INVALID/i
+
+function isTopicGone(error: unknown): boolean {
+  return error instanceof GrammyError && TOPIC_GONE.test(error.description)
+}
+
+/**
+ * The opaque chat reference decoded (F14): a plain chat id as before, or
+ * <chat>/<thread> for a forum topic, sent as message_thread_id. Edits and
+ * pins address a message by id and take no thread.
+ */
+function toTarget(reference: string): {
+  readonly chat: string
+  readonly thread: { readonly message_thread_id?: number }
+} {
+  const target = parseTarget(reference)
+  return {
+    chat: target.chatId,
+    thread: target.threadId === undefined ? {} : { message_thread_id: Number(target.threadId) },
   }
 }
 

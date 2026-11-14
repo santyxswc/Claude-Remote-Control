@@ -28,11 +28,17 @@ const COLUMNS =
   'claimant_display_name, claimed_at, ended_at, cancel_reason, revision'
 
 export class SqlitePairingStore implements PairingStore {
-  constructor(private readonly db: Database) {}
+  /** 	able: group_bindings reuses this store for hub init codes (F14). */
+  constructor(
+    protected readonly db: Database,
+    private readonly table: 'pairings' | 'group_bindings' = 'pairings',
+  ) {}
 
   insert(pairing: Pairing): void {
     this.db
-      .query(`INSERT INTO pairings (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .query(
+        `INSERT INTO ${this.table} (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
       .run(...toRow(pairing.toSnapshot()))
   }
 
@@ -40,7 +46,7 @@ export class SqlitePairingStore implements PairingStore {
     const [id, ...rest] = toRow(next.toSnapshot()) as [string, ...SqlValue[]]
     const result = this.db
       .query(
-        `UPDATE pairings SET state = ?, code_hash = ?, created_at = ?, expires_at = ?,
+        `UPDATE ${this.table} SET state = ?, code_hash = ?, created_at = ?, expires_at = ?,
            failed_attempts = ?, claimant_id = ?, claimant_username = ?, claimant_display_name = ?,
            claimed_at = ?, ended_at = ?, cancel_reason = ?, revision = ?
          WHERE id = ? AND revision = ?`,
@@ -51,7 +57,7 @@ export class SqlitePairingStore implements PairingStore {
 
   findById(id: string): Pairing | undefined {
     const row = this.db
-      .query<PairingRow, [string]>(`SELECT ${COLUMNS} FROM pairings WHERE id = ?`)
+      .query<PairingRow, [string]>(`SELECT ${COLUMNS} FROM ${this.table} WHERE id = ?`)
       .get(id)
     return row === null ? undefined : fromRow(row)
   }
@@ -59,7 +65,7 @@ export class SqlitePairingStore implements PairingStore {
   findActive(): Pairing | undefined {
     const row = this.db
       .query<PairingRow, []>(
-        `SELECT ${COLUMNS} FROM pairings WHERE state IN ('pending', 'claimed')
+        `SELECT ${COLUMNS} FROM ${this.table} WHERE state IN ('pending', 'claimed')
          ORDER BY created_at DESC, rowid DESC LIMIT 1`,
       )
       .get()

@@ -211,7 +211,12 @@ export class TelegramPoller implements InboundPoller {
 
   #laneOf(update: Update): string {
     if (update.message !== undefined) {
-      const chat = String(update.message.chat.id)
+      // F14: each forum topic is its own lane, so one busy topic never holds up another.
+      const topic =
+        update.message.is_topic_message === true && update.message.message_thread_id !== undefined
+          ? `/${update.message.message_thread_id}`
+          : ''
+      const chat = `${update.message.chat.id}${topic}`
       let urgent = false
       try {
         urgent = this.#options.isUrgent?.(toInboundMessage(update.message)) === true

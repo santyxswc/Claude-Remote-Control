@@ -29,8 +29,8 @@ export class SweepInbox {
     return removed
   }
 
-  async orphans(): Promise<number> {
-    const removed = await this.inbox.removeOtherSessions()
+  async orphans(only?: ReadonlySet<string>): Promise<number> {
+    const removed = await this.inbox.removeOtherSessions(only)
     if (removed > 0) this.logger.info('removed the inboxes of earlier sessions', { removed })
     return removed
   }

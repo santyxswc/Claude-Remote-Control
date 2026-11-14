@@ -10,6 +10,7 @@ import { TelegramAttachmentSource } from '../adapters/telegram/TelegramAttachmen
 import { FileAudioScratch } from '../adapters/voice/FileAudioScratch.ts'
 import type { Messages } from '../application/i18n/messages.ts'
 import type { InboundHandler } from '../application/pipeline/InboundStep.ts'
+import type { AttachmentSource } from '../application/ports/AttachmentSource.ts'
 import type { ChatGateway } from '../application/ports/ChatGateway.ts'
 import type { Clock } from '../application/ports/Clock.ts'
 import type { Logger } from '../application/ports/Logger.ts'
@@ -35,6 +36,8 @@ export interface VoiceWiringDeps {
   readonly maxUploadBytes: number
   readonly clock: Clock
   readonly logger: Logger
+  /** F14, a spoke: downloads go through the hub; Telegram otherwise. */
+  readonly source?: AttachmentSource
   /** Test seam for the downloads. */
   readonly fetch?: typeof fetch
 }
@@ -60,9 +63,11 @@ export function buildVoice(deps: VoiceWiringDeps): VoiceWiring {
       ...common,
       transcriber: deps.transcriber,
       scratch,
-      source: new TelegramAttachmentSource(deps.token, {
-        ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
-      }),
+      source:
+        deps.source ??
+        new TelegramAttachmentSource(deps.token, {
+          ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
+        }),
       chat: deps.outbound,
       messages,
       random: new CryptoRandomSource(),

@@ -497,6 +497,53 @@ export interface Messages {
   readonly accessRevoked: (id: string) => string
   readonly accessNotFound: (id: string) => string
   readonly accessInvalidId: string
+
+  // F14: hub mode (a forum supergroup, a topic per session)
+  readonly hubUseATopic: string
+  readonly hubNoSessionHere: string
+  readonly hubTapRefused: string
+  readonly hubSessionBusy: string
+  readonly hubStopped: (brake: 'engaged' | 'already_engaged', notified: number) => string
+  readonly hubSessionsList: (
+    sessions: readonly { readonly topic: string; readonly project: string | undefined }[],
+  ) => string
+  readonly hubPrivateChatPointer: string
+  readonly hubSessionStarted: (project: string | undefined) => string
+  readonly hubSessionEnded: string
+  readonly hubBindNotAForum: string
+  readonly hubBindClaimed: string
+  // CLI: hub
+  readonly hubInitNotPaired: string
+  readonly hubInitBusy: (role: string, pid: number) => string
+  readonly hubInitInstructions: (botUsername: string) => string
+  readonly hubInitSend: (command: string) => string
+  readonly hubInitExpiresIn: (seconds: number) => string
+  readonly hubInitClaimedBy: (
+    claimant: ClaimantView,
+    group: { title: string; chatId: string },
+  ) => string
+  readonly hubInitConfirmPrompt: string
+  readonly hubInitMissingRights: (rights: readonly string[]) => string
+  readonly hubInitOptionalRights: (rights: readonly string[]) => string
+  readonly hubInitRightsUnknown: (detail: string) => string
+  readonly hubInitBound: (title: string) => string
+  readonly hubInitDeclined: string
+  readonly hubInitExpired: string
+  readonly hubInitCancelled: string
+  readonly hubRunNotConfigured: string
+  readonly hubRunBusy: (role: string, pid: number) => string
+  readonly hubRunStarted: (title: string) => string
+  readonly hubRunStopped: string
+  readonly hubStatusOff: string
+  readonly hubStatusOn: (view: {
+    readonly title: string
+    readonly chatId: string
+    readonly running: boolean
+    readonly pid: number | undefined
+    readonly topics: number
+  }) => string
+  readonly hubOffDone: string
+  readonly hubOffNotOn: string
 }
 
 /**
@@ -515,6 +562,10 @@ Comandos:
   access revoke <id>     Retira el acceso a una cuenta
   stop [motivo]          Activa el freno: Claude se detiene en su próxima herramienta
   resume                 Retira el freno
+  hub init               Vincula el bot a un grupo con topics (modo hub, un topic por sesión)
+  hub run                Arranca el hub en primer plano (también: hub)
+  hub status             Muestra si el modo hub está activo y si el hub corre
+  hub off                Apaga el modo hub
   --help                Muestra esta ayuda
 
 El token nunca se pasa como argumento: init lo pide sin mostrarlo o lo lee de stdin.`
@@ -528,6 +579,10 @@ Commands:
   access revoke <id>     Remove an account's access
   stop [reason]          Engage the brake: Claude stops at its next tool call
   resume                 Release the brake
+  hub init               Bind the bot to a group with topics (hub mode, one topic per session)
+  hub run                Run the hub in the foreground (also: hub)
+  hub status             Show whether hub mode is on and the hub runs
+  hub off                Turn hub mode off
   --help                Show this help
 
 The token is never passed as an argument: init asks for it without echo or reads it from stdin.`
@@ -1427,6 +1482,98 @@ const es: Messages = {
   accessRevoked: (id) => `Acceso retirado a ${id}.`,
   accessNotFound: (id) => `${id} no estaba en la lista de permitidos.`,
   accessInvalidId: 'El id debe ser el número de usuario de Telegram (solo dígitos).',
+
+  hubUseATopic:
+    'Este es el topic General: aquí no escucha ninguna sesión. Escribe en el topic de la sesión, o usa /sessions.',
+  hubNoSessionHere: 'Ninguna sesión está conectada a este topic ahora.',
+  hubTapRefused: 'Ese botón no pertenece a este topic.',
+  hubSessionBusy:
+    'La sesión de este topic no da abasto; el mensaje no llegó. Inténtalo en un momento.',
+  hubStopped: (brake, notified) =>
+    lines(
+      brake === 'engaged'
+        ? '🛑 Freno activado para todas las sesiones: Claude no puede usar ninguna herramienta hasta /resume.'
+        : '🛑 El freno ya estaba activo para todas las sesiones.',
+      `Sesiones avisadas: ${notified}. Cada una deniega sus permisos pendientes en su topic.`,
+      'Envía /resume para retirarlo.',
+    ),
+  hubSessionsList: (sessions) =>
+    sessions.length === 0
+      ? 'No hay sesiones conectadas.'
+      : lines(
+          'Sesiones conectadas:',
+          ...sessions.map(
+            (s) =>
+              `• ${sanitizeDisplayText(s.topic, 128)}${s.project === undefined ? '' : ` (${sanitizeDisplayText(s.project)})`}`,
+          ),
+        ),
+  hubPrivateChatPointer:
+    'El modo hub está activo: cada sesión tiene su topic en el grupo. Aquí solo funcionan /stop, /resume y /sessions.',
+  hubSessionStarted: (project) =>
+    `🟢 Sesión conectada${project === undefined ? '' : `: ${sanitizeDisplayText(project)}`}. Lo que escribas en este topic le llega solo a ella.`,
+  hubSessionEnded: '⚪ La sesión de este topic terminó.',
+  hubBindNotAForum:
+    'Este grupo no tiene topics. Actívalos (Administrar grupo → Topics) y envía el código otra vez.',
+  hubBindClaimed: 'Código recibido. Confirma en la terminal de tu PC.',
+  hubInitNotPaired: `Primero empareja tu cuenta: ${CLI_INVOCATION} pair. Solo una cuenta permitida puede vincular el grupo.`,
+  hubInitBusy: (role, pid) =>
+    role === 'hub'
+      ? `El hub está en marcha (proceso ${pid}). Detenlo antes de vincular otro grupo.`
+      : `Otro proceso lee los mensajes del bot (${role}, proceso ${pid}). Cierra las sesiones de Claude Code que usan el bridge y vuelve a intentarlo.`,
+  hubInitInstructions: (bot) =>
+    lines(
+      'Vincular el bot a un grupo con topics (modo hub):',
+      '1. Crea un grupo solo contigo y activa los topics (Administrar grupo → Topics).',
+      `2. Agrega a @${bot} como administrador con el permiso "Administrar topics" (y "Fijar mensajes" para /pin).`,
+      '3. Envía en el grupo, desde tu cuenta (no como administrador anónimo), este mensaje:',
+    ),
+  hubInitSend: (command) => command,
+  hubInitExpiresIn: (seconds) => `El código vence en ${seconds} segundos y sirve una vez.`,
+  hubInitClaimedBy: (c, group) =>
+    lines(
+      claimant(c, {
+        header: 'Código recibido de:',
+        id: 'Id de Telegram',
+        name: 'Nombre',
+        username: 'Usuario',
+        none: '(ninguno)',
+      }),
+      `En el grupo: "${sanitizeDisplayText(group.title, 128)}" (id ${sanitizeDisplayText(group.chatId)})`,
+    ),
+  hubInitConfirmPrompt: '¿Es tu grupo? Todo lo que hagan las sesiones se verá allí. [s/N] ',
+  hubInitMissingRights: (rights) =>
+    `El bot no tiene estos permisos de administrador en el grupo: ${rights.join(', ')}. Dáselos y ejecuta hub init otra vez.`,
+  hubInitOptionalRights: (rights) =>
+    `Aviso: al bot le faltan estos permisos opcionales: ${rights.join(', ')}. /pin no funcionará en los topics hasta que se los des.`,
+  hubInitRightsUnknown: (detail) =>
+    `No se pudieron comprobar los permisos del bot en el grupo (${detail}). Inténtalo otra vez.`,
+  hubInitBound: (title) =>
+    lines(
+      `Listo: el bot queda vinculado a "${sanitizeDisplayText(title, 128)}". El modo hub está activo.`,
+      `Arranca el hub con: ${CLI_INVOCATION} hub run`,
+      'Reinicia las sesiones de Claude Code abiertas para que se conecten al hub.',
+    ),
+  hubInitDeclined: 'Vinculación rechazada. No se vinculó ningún grupo.',
+  hubInitExpired: 'El código venció sin confirmación. Ejecuta hub init otra vez.',
+  hubInitCancelled: 'La vinculación se canceló (demasiados intentos, o se reemplazó).',
+  hubRunNotConfigured: `El modo hub no está activo. Vincula un grupo con: ${CLI_INVOCATION} hub init`,
+  hubRunBusy: (role, pid) =>
+    role === 'hub'
+      ? `Ya hay un hub en marcha (proceso ${pid}).`
+      : `Otro proceso lee los mensajes del bot (${role}, proceso ${pid}). Cierra las sesiones de Claude Code abiertas antes de activar el modo hub, y vuelve a abrirlas después.`,
+  hubRunStarted: (title) =>
+    `Hub en marcha para "${sanitizeDisplayText(title, 128)}". Ctrl+C para detenerlo.`,
+  hubRunStopped: 'Hub detenido.',
+  hubStatusOff: `El modo hub está apagado. Para activarlo: ${CLI_INVOCATION} hub init`,
+  hubStatusOn: (v) =>
+    lines(
+      `Modo hub activo: "${sanitizeDisplayText(v.title, 128)}" (id ${sanitizeDisplayText(v.chatId)}).`,
+      v.running ? `El hub está en marcha (proceso ${v.pid ?? '?'}).` : 'El hub no está en marcha.',
+      `Topics creados: ${v.topics}.`,
+    ),
+  hubOffDone:
+    'Modo hub apagado. Detén el hub y reinicia las sesiones: volverán a leer el chat privado. Los topics se quedan en el grupo.',
+  hubOffNotOn: 'El modo hub ya estaba apagado.',
 }
 
 const en: Messages = {
@@ -1816,6 +1963,98 @@ const en: Messages = {
   accessRevoked: (id) => `Access removed for ${id}.`,
   accessNotFound: (id) => `${id} was not in the allowlist.`,
   accessInvalidId: 'The id must be the numeric Telegram user id (digits only).',
+
+  hubUseATopic:
+    'This is the General topic: no session listens here. Write in the session topic, or use /sessions.',
+  hubNoSessionHere: 'No session is connected to this topic right now.',
+  hubTapRefused: 'That button does not belong to this topic.',
+  hubSessionBusy:
+    'The session of this topic is overloaded; the message did not get through. Try again shortly.',
+  hubStopped: (brake, notified) =>
+    lines(
+      brake === 'engaged'
+        ? '🛑 Brake engaged for every session: Claude cannot use any tool until /resume.'
+        : '🛑 The brake was already engaged for every session.',
+      `Sessions told: ${notified}. Each one denies its pending permissions in its topic.`,
+      'Send /resume to release it.',
+    ),
+  hubSessionsList: (sessions) =>
+    sessions.length === 0
+      ? 'No sessions are connected.'
+      : lines(
+          'Connected sessions:',
+          ...sessions.map(
+            (s) =>
+              `• ${sanitizeDisplayText(s.topic, 128)}${s.project === undefined ? '' : ` (${sanitizeDisplayText(s.project)})`}`,
+          ),
+        ),
+  hubPrivateChatPointer:
+    'Hub mode is on: each session has its topic in the group. Only /stop, /resume and /sessions work here.',
+  hubSessionStarted: (project) =>
+    `🟢 Session connected${project === undefined ? '' : `: ${sanitizeDisplayText(project)}`}. What you write in this topic reaches only this session.`,
+  hubSessionEnded: '⚪ The session of this topic ended.',
+  hubBindNotAForum:
+    'This group has no topics. Turn them on (Manage group → Topics) and send the code again.',
+  hubBindClaimed: 'Code received. Confirm at the terminal on your PC.',
+  hubInitNotPaired: `Pair your account first: ${CLI_INVOCATION} pair. Only an allowed account can bind the group.`,
+  hubInitBusy: (role, pid) =>
+    role === 'hub'
+      ? `The hub is running (process ${pid}). Stop it before binding another group.`
+      : `Another process reads the bot messages (${role}, process ${pid}). Close the Claude Code sessions that use the bridge and try again.`,
+  hubInitInstructions: (bot) =>
+    lines(
+      'Bind the bot to a group with topics (hub mode):',
+      '1. Create a group with only you in it and turn topics on (Manage group → Topics).',
+      `2. Add @${bot} as an administrator with the "Manage topics" right (and "Pin messages" for /pin).`,
+      '3. Send this message in the group, from your account (not as an anonymous admin):',
+    ),
+  hubInitSend: (command) => command,
+  hubInitExpiresIn: (seconds) => `The code expires in ${seconds} seconds and works once.`,
+  hubInitClaimedBy: (c, group) =>
+    lines(
+      claimant(c, {
+        header: 'Code received from:',
+        id: 'Telegram id',
+        name: 'Name',
+        username: 'Username',
+        none: '(none)',
+      }),
+      `In the group: "${sanitizeDisplayText(group.title, 128)}" (id ${sanitizeDisplayText(group.chatId)})`,
+    ),
+  hubInitConfirmPrompt: 'Is this your group? Everything the sessions do will show there. [y/N] ',
+  hubInitMissingRights: (rights) =>
+    `The bot lacks these administrator rights in the group: ${rights.join(', ')}. Grant them and run hub init again.`,
+  hubInitOptionalRights: (rights) =>
+    `Note: the bot lacks these optional rights: ${rights.join(', ')}. /pin will not work in the topics until you grant them.`,
+  hubInitRightsUnknown: (detail) =>
+    `Could not check the bot's rights in the group (${detail}). Try again.`,
+  hubInitBound: (title) =>
+    lines(
+      `Done: the bot is bound to "${sanitizeDisplayText(title, 128)}". Hub mode is on.`,
+      `Start the hub with: ${CLI_INVOCATION} hub run`,
+      'Restart open Claude Code sessions so they connect to the hub.',
+    ),
+  hubInitDeclined: 'Binding declined. No group was bound.',
+  hubInitExpired: 'The code expired without confirmation. Run hub init again.',
+  hubInitCancelled: 'The binding was cancelled (too many attempts, or it was replaced).',
+  hubRunNotConfigured: `Hub mode is off. Bind a group with: ${CLI_INVOCATION} hub init`,
+  hubRunBusy: (role, pid) =>
+    role === 'hub'
+      ? `A hub is already running (process ${pid}).`
+      : `Another process reads the bot messages (${role}, process ${pid}). Close open Claude Code sessions before turning hub mode on, and reopen them afterwards.`,
+  hubRunStarted: (title) =>
+    `Hub running for "${sanitizeDisplayText(title, 128)}". Ctrl+C to stop it.`,
+  hubRunStopped: 'Hub stopped.',
+  hubStatusOff: `Hub mode is off. To turn it on: ${CLI_INVOCATION} hub init`,
+  hubStatusOn: (v) =>
+    lines(
+      `Hub mode is on: "${sanitizeDisplayText(v.title, 128)}" (id ${sanitizeDisplayText(v.chatId)}).`,
+      v.running ? `The hub is running (process ${v.pid ?? '?'}).` : 'The hub is not running.',
+      `Topics created: ${v.topics}.`,
+    ),
+  hubOffDone:
+    'Hub mode is off. Stop the hub and restart the sessions: they will read the private chat again. The topics stay in the group.',
+  hubOffNotOn: 'Hub mode was already off.',
 }
 
 const CATALOG: Readonly<Record<Locale, Messages>> = { es, en }

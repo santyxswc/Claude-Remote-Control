@@ -1,5 +1,5 @@
 /** Telegram allows a single `getUpdates` consumer per bot; this lock picks it. */
-export type PollerRole = 'channel' | 'cli'
+export type PollerRole = 'channel' | 'cli' | 'hub'
 
 export interface PollerLockHolder {
   readonly pid: number
@@ -17,6 +17,8 @@ export interface PollerLock {
   tryAcquire(role: PollerRole): PollerLockResult
   /** Heartbeat. Returns false when this process no longer holds the lock. */
   refresh(): boolean
+  /** The live holder, if any, without taking anything (`hub status`, F14). */
+  currentHolder?(): PollerLockHolder | undefined
   /** Releases the lock if this process holds it. */
   release(): void
 }

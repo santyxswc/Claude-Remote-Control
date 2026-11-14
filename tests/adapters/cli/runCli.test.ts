@@ -59,6 +59,10 @@ function context(overrides: Partial<CliContext> = {}): { terminal: FakeTerminal;
       pair: fail,
       access: fail,
       brake: fail,
+      hubInit: fail,
+      hubRun: fail,
+      hubStatus: fail,
+      hubOff: fail,
       ...overrides,
     },
   }

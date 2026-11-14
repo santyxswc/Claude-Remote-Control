@@ -536,7 +536,7 @@ function toAskChoiceResult(outcome: AskChoiceOutcome): CallToolResult {
     case 'refused':
       return errorResult(
         outcome.reason === 'not_polling'
-          ? 'Refused: this session does not receive Telegram updates right now (another session polls the bot), so nobody could answer.'
+          ? 'Refused: this session does not receive Telegram updates right now (another session polls the bot, or the hub is not running in hub mode), so nobody could answer.'
           : REFUSALS.chat_not_allowed,
       )
     case 'invalid':

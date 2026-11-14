@@ -55,6 +55,16 @@ export type AuditEvent =
   | 'voice.sent'
   | 'voice.discarded'
   | 'voice.expired'
+  | 'hub.binding_started'
+  | 'hub.binding_replaced'
+  | 'hub.binding_claimed'
+  | 'hub.binding_attempt_failed'
+  | 'hub.binding_cancelled'
+  | 'hub.binding_expired'
+  | 'hub.binding_confirmed'
+  | 'hub.binding_declined'
+  | 'hub.bound'
+  | 'hub.unbound'
 
 /** Values that are safe to persist: never tokens, codes or message text. */
 export type AuditDetails = Readonly<Record<string, string | number | boolean | null>>

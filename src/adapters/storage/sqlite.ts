@@ -147,6 +147,74 @@ const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX voice_transcripts_by_state ON voice_transcripts (state, created_at);
   `,
+  // F14 (hub mode): the bound forum supergroup, project topics, the sessions
+  // that used them, which topic each sent prompt belongs to, the pinned status
+  // per topic, and group-binding codes (the pairing columns plus the group).
+  `
+  CREATE TABLE hub_group (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    chat_id TEXT NOT NULL CHECK (chat_id GLOB '-[1-9]*' AND substr(chat_id, 2) NOT GLOB '*[^0-9]*'),
+    title TEXT NOT NULL,
+    bound_by TEXT NOT NULL,
+    bound_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE hub_topics (
+    topic_id TEXT NOT NULL CHECK (topic_id GLOB '[1-9]*' AND topic_id NOT GLOB '*[^0-9]*'),
+    chat_id TEXT NOT NULL,
+    project_key TEXT NOT NULL,
+    slot INTEGER NOT NULL CHECK (slot >= 1),
+    name TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (chat_id, topic_id),
+    UNIQUE (chat_id, project_key, slot)
+  );
+
+  CREATE TABLE hub_sessions (
+    session TEXT PRIMARY KEY,
+    topic_id TEXT NOT NULL,
+    registered_at INTEGER NOT NULL,
+    ended_at INTEGER
+  );
+  CREATE INDEX hub_sessions_by_topic ON hub_sessions (topic_id, ended_at);
+
+  CREATE TABLE hub_messages (
+    chat_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    topic_id TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (chat_id, message_id)
+  );
+  CREATE INDEX hub_messages_by_age ON hub_messages (at);
+
+  CREATE TABLE hub_status_messages (
+    topic_id TEXT NOT NULL,
+    chat_id TEXT NOT NULL CHECK (chat_id GLOB '[1-9]*' AND chat_id NOT GLOB '*[^0-9]*'),
+    message_id TEXT NOT NULL CHECK (message_id GLOB '[1-9]*' AND message_id NOT GLOB '*[^0-9]*'),
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (topic_id, chat_id)
+  );
+
+  CREATE TABLE group_bindings (
+    id TEXT PRIMARY KEY,
+    state TEXT NOT NULL
+      CHECK (state IN ('pending', 'claimed', 'confirmed', 'expired', 'cancelled')),
+    code_hash TEXT,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    failed_attempts INTEGER NOT NULL,
+    claimant_id TEXT,
+    claimant_username TEXT,
+    claimant_display_name TEXT,
+    claimed_at INTEGER,
+    ended_at INTEGER,
+    cancel_reason TEXT,
+    revision INTEGER NOT NULL,
+    group_id TEXT,
+    group_title TEXT
+  );
+  CREATE INDEX group_bindings_by_state ON group_bindings (state, created_at);
+  `,
 ]
 
 export const SCHEMA_VERSION = MIGRATIONS.length
