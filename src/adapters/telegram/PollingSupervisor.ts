@@ -1,3 +1,4 @@
+import type { CallbackHandler } from '../../application/callbacks/InboundCallback.ts'
 import type { InboundHandler } from '../../application/pipeline/InboundStep.ts'
 import type { InboundPoller, PollingExit } from '../../application/ports/InboundPoller.ts'
 import type { Logger } from '../../application/ports/Logger.ts'
@@ -8,6 +9,10 @@ export interface PollingSupervisorOptions {
   readonly lock: PollerLock
   readonly poller: InboundPoller
   readonly handler: InboundHandler
+  /** Button taps; without it they are dropped. */
+  readonly callbackHandler?: CallbackHandler
+  /** Runs each time this process takes the lock and starts polling. */
+  readonly onPollingStarted?: () => void
   readonly logger: Logger
   readonly role: PollerRole
   readonly heartbeatMs: number
@@ -61,13 +66,14 @@ export class PollingSupervisor {
     this.#polling = true
     this.#clearTimer()
     this.#cancelTimer = this.#every(this.#o.heartbeatMs, () => this.#heartbeat())
-    void this.#o.poller.start(this.#o.handler).then(
+    void this.#o.poller.start(this.#o.handler, this.#o.callbackHandler).then(
       (exit) => this.#onPollingEnded(exit),
       (error: unknown) => {
         this.#o.logger.error('telegram polling crashed', { error })
         this.#onPollingEnded('stopped')
       },
     )
+    this.#o.onPollingStarted?.()
     return true
   }
 

@@ -9,7 +9,10 @@ import {
 import { TelegramChatGateway } from '../../../src/adapters/telegram/TelegramChatGateway.ts'
 import { TelegramDeepLinks } from '../../../src/adapters/telegram/TelegramDeepLinks.ts'
 import { TelegramIdentityProbe } from '../../../src/adapters/telegram/TelegramIdentityProbe.ts'
-import { toInboundMessage } from '../../../src/adapters/telegram/toInboundMessage.ts'
+import {
+  toInboundCallback,
+  toInboundMessage,
+} from '../../../src/adapters/telegram/toInboundMessage.ts'
 import { BotUnreachableError, InvalidBotTokenError } from '../../../src/application/errors.ts'
 import { FakeClock, FakeSleeper } from '../../fakes.ts'
 import { FakeTelegramApi, TEST_TOKEN } from '../../fakeTelegram.ts'
@@ -213,5 +216,124 @@ describe('token hygiene helpers', () => {
     expect(new TelegramDeepLinks('test_bot').linkFor('abc-DEF_123')).toBe(
       'https://t.me/test_bot?start=abc-DEF_123',
     )
+  })
+})
+
+describe('TelegramChatGateway prompts', () => {
+  const keyboard = [
+    [
+      { label: 'Approve', data: 'p1:abcde:a' },
+      { label: 'Deny', data: 'p1:abcde:d' },
+    ],
+  ]
+
+  test('sendPrompt: plain text, no preview, inline keyboard; returns the message ref', async () => {
+    const api = new FakeTelegramApi()
+    const gateway = new TelegramChatGateway(TEST_TOKEN, { fetch: api.fetch })
+    const ref = await gateway.sendPrompt('5000000001', '<b>x</b> [y](z)', keyboard)
+    const payload = api.callsTo('sendMessage')[0]?.payload
+    expect(payload?.parse_mode).toBeUndefined()
+    expect(payload?.text).toBe('<b>x</b> [y](z)')
+    expect(payload?.link_preview_options).toEqual({ is_disabled: true })
+    expect(payload?.reply_markup).toEqual({
+      inline_keyboard: [
+        [
+          { text: 'Approve', callback_data: 'p1:abcde:a' },
+          { text: 'Deny', callback_data: 'p1:abcde:d' },
+        ],
+      ],
+    })
+    expect(ref).toEqual({ chatId: '5000000001', messageId: '1000' })
+  })
+
+  test('editPrompt replaces text and keyboard; an empty keyboard removes the buttons', async () => {
+    const api = new FakeTelegramApi()
+    const gateway = new TelegramChatGateway(TEST_TOKEN, { fetch: api.fetch })
+    await gateway.editPrompt({ chatId: '5000000001', messageId: '77' }, 'done', [])
+    expect(api.callsTo('editMessageText')[0]?.payload).toMatchObject({
+      chat_id: '5000000001',
+      message_id: 77,
+      text: 'done',
+      reply_markup: { inline_keyboard: [] },
+    })
+  })
+
+  test('editing to identical content is not an error; other failures are', async () => {
+    const api = new FakeTelegramApi()
+    const gateway = new TelegramChatGateway(TEST_TOKEN, { fetch: api.fetch })
+    api.script('editMessageText', {
+      ok: false,
+      error_code: 400,
+      description: 'Bad Request: message is not modified',
+    })
+    await gateway.editPrompt({ chatId: '1', messageId: '2' }, 'x', [])
+    api.script('editMessageText', {
+      ok: false,
+      error_code: 400,
+      description: 'Bad Request: message to edit not found',
+    })
+    await expect(gateway.editPrompt({ chatId: '1', messageId: '2' }, 'x', [])).rejects.toThrow(
+      'message to edit not found',
+    )
+  })
+
+  test('answerCallback with and without a toast', async () => {
+    const api = new FakeTelegramApi()
+    const gateway = new TelegramChatGateway(TEST_TOKEN, { fetch: api.fetch })
+    await gateway.answerCallback('cb1', 'Approved.')
+    await gateway.answerCallback('cb2')
+    expect(api.callsTo('answerCallbackQuery').map((c) => c.payload)).toEqual([
+      { callback_query_id: 'cb1', text: 'Approved.' },
+      { callback_query_id: 'cb2' },
+    ] as never)
+  })
+
+  test('callback data over 64 bytes is refused before any request', async () => {
+    const api = new FakeTelegramApi()
+    const gateway = new TelegramChatGateway(TEST_TOKEN, { fetch: api.fetch })
+    await expect(
+      gateway.sendPrompt('1', 'x', [[{ label: 'x', data: 'é'.repeat(33) }]]),
+    ).rejects.toThrow('callback data')
+    expect(api.calls).toEqual([])
+  })
+})
+
+describe('toInboundCallback', () => {
+  test('maps ids to strings and keeps the chat kind', () => {
+    expect(
+      toInboundCallback({
+        id: 'q1',
+        from: { id: 5_000_000_001, is_bot: false, first_name: 'Owner', username: 'owner' },
+        chat_instance: 'ci',
+        data: 'p1:abcde:a',
+        message: {
+          message_id: 7,
+          date: 0,
+          chat: { id: 5_000_000_001, type: 'private', first_name: 'Owner' },
+        },
+      } as never),
+    ).toEqual({
+      id: 'q1',
+      chatId: '5000000001',
+      chatKind: 'private',
+      sender: { id: '5000000001', username: 'owner', displayName: 'Owner' },
+      data: 'p1:abcde:a',
+    })
+  })
+
+  test('a tap without a message has no chat; a bot has no sender', () => {
+    const mapped = toInboundCallback({
+      id: 'q2',
+      from: { id: 1, is_bot: true, first_name: 'Bot' },
+      chat_instance: 'ci',
+      inline_message_id: 'im',
+    } as never)
+    expect(mapped).toEqual({
+      id: 'q2',
+      chatId: undefined,
+      chatKind: undefined,
+      sender: undefined,
+      data: undefined,
+    })
   })
 })

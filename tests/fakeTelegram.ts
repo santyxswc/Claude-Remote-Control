@@ -13,6 +13,11 @@ export interface ApiPayload {
   readonly action?: string
   readonly parse_mode?: string
   readonly link_preview_options?: { readonly is_disabled?: boolean }
+  readonly message_id?: number
+  readonly callback_query_id?: string
+  readonly reply_markup?: {
+    readonly inline_keyboard?: readonly (readonly { text: string; callback_data?: string }[])[]
+  }
   readonly reply_parameters?: {
     readonly message_id?: number
     readonly allow_sending_without_reply?: boolean
@@ -59,6 +64,8 @@ export class FakeTelegramApi {
   readonly #scripted = new Map<string, Reply[]>()
   #wake: (() => void) | undefined
   #nextUpdateId = 1
+  #nextMessageId = 1000
+  #nextCallbackId = 1
 
   readonly fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input)
@@ -89,11 +96,45 @@ export class FakeTelegramApi {
     } as Omit<Update, 'update_id'>)
   }
 
+  /**
+   * Queues a tap on an inline button of `messageId` in `from`'s private chat
+   * (or in `chat`, to play a tap from a group). Returns the callback query id.
+   */
+  tap(
+    from: { id: number; username?: string; first_name: string },
+    messageId: number,
+    data: string,
+    chat: { id: number; type: string } = { id: from.id, type: 'private' },
+  ): string {
+    const id = `cbq-${this.#nextCallbackId++}`
+    this.push({
+      callback_query: {
+        id,
+        from: { is_bot: false, ...from },
+        chat_instance: 'ci',
+        data,
+        message: { message_id: messageId, date: 1_700_000_000, chat: { ...chat, first_name: 'x' } },
+      },
+    } as unknown as Omit<Update, 'update_id'>)
+    return id
+  }
+
   push(update: Omit<Update, 'update_id'>): number {
     const update_id = this.#nextUpdateId++
     this.#updates.push({ update_id, ...update } as Update)
-    this.#wake?.()
+    const wake = this.#wake
+    this.#wake = undefined
+    wake?.()
     return update_id
+  }
+
+  /**
+   * True while a `getUpdates` is parked with nothing new to return: every
+   * update pushed so far has been handed out and the poller asked again,
+   * which it only does after handling the previous batch.
+   */
+  get idle(): boolean {
+    return this.#wake !== undefined
   }
 
   callsTo(method: string): ApiCall[] {
@@ -122,14 +163,25 @@ export class FakeTelegramApi {
         return {
           ok: true,
           result: {
-            message_id: 1,
+            message_id: this.#nextMessageId++,
             date: 0,
             chat: { id: payload.chat_id, type: 'private' },
             text: payload.text,
           },
         }
       case 'sendChatAction':
+      case 'answerCallbackQuery':
         return { ok: true, result: true }
+      case 'editMessageText':
+        return {
+          ok: true,
+          result: {
+            message_id: payload.message_id,
+            date: 0,
+            chat: { id: payload.chat_id, type: 'private' },
+            text: payload.text,
+          },
+        }
       case 'getUpdates':
         return { ok: true, result: await this.#takeUpdates(payload, signal) }
       default:

@@ -18,11 +18,11 @@ This is the threat table from `docs/plan.md` ("Seguridad"), kept up to date. Sta
 | A secret leaves through the chat | Redaction in the outbound pipeline: tokens with known prefixes, `.env` values, private keys | **Implemented (F2).** Decorators over `ChatGateway`: `RedactingChatGateway` (domain `SecretRedactor` in `src/domain/redaction/`: Anthropic, OpenAI, GitHub, GitLab, Slack, AWS key ids, Google, Stripe, npm, Telegram bot tokens, JWTs, `Bearer` tokens, URL passwords, whole PEM private-key blocks, and exact values from the project's `.env`/`.env.*` plus the bot token) runs before `ChunkingChatGateway`, so a secret cannot straddle two messages. `src/composition/outbound.ts` is the only place the raw Telegram gateway exists and exports only `buildOutbound()`; `tests/composition/outbound.test.ts` enforces it. Only redaction counts are audited. Screenshots (F5) will not pass through it |
 | Claude is steered into messaging other chats | The `reply` tool only accepts the private chat of a currently allowlisted sender | **Implemented (F2).** `src/application/use-cases/SendReply.ts` checks the live allowlist on every call (revocation is immediate), refuses anything else with an MCP error result and audits `reply.refused`. Plain text only (no `parse_mode`) and link previews disabled, so Claude's output cannot carry markup or hidden links |
 | Flooding the bot | Per-sender rate limit; throttled logs | **Implemented (F2).** `RateLimitStep` (token bucket, burst 20, 1 message / 3 s, one notice per minute, audited) after authentication; the drop log lines for strangers and non-private chats are throttled to one per sender (or chat) per minute with a suppressed count (`src/domain/EventThrottle.ts`) |
-| Approving something destructive by mistake | `RiskPolicy` detects patterns such as `rm -rf`, `git push --force` or `DROP` and asks for a second tap | **Planned (F3)** |
-| Stale or double-tapped button | Each button carries the `request_id` from Claude Code; the state machine refuses to resolve twice; the keyboard is removed on resolution | **Planned (F3)** |
-| Misleading text in a permission preview | `description` and `input_preview` are shown as escaped plain text, without formatting or links | **Planned (F3).** Every outbound message is already plain text (no parse mode) with link previews disabled in `TelegramChatGateway` |
+| Approving something destructive by mistake | `RiskPolicy` detects patterns such as `rm -rf`, `git push --force` or `DROP` and asks for a second tap | **Implemented (F3).** `src/domain/permissions/RiskPolicy.ts` (table of 20 rules over `input_preview`, erring towards high; an elided or unserializable preview is high). High risk needs Approve then Confirm within 30 s (`awaiting_confirmation` in `PermissionRequest`); a text `yes <id>` cannot approve it |
+| Stale or double-tapped button | Each button carries the `request_id` from Claude Code; the state machine refuses to resolve twice; the keyboard is removed on resolution | **Implemented (F3).** Button data `p1:<id>:<action>` parsed strictly (`src/application/permissions/callbackData.ts`). `ResolvePermission` stores the decision with compare-and-set before sending the verdict, so a double tap or a racing expiry yields one verdict; every copy is edited and loses its buttons. Expired, resolved and other-session requests answer with a toast and change nothing |
+| Misleading text in a permission preview | `description` and `input_preview` are shown as escaped plain text, without formatting or links | **Implemented (F3).** Prompts are plain text (no `parse_mode`) with link previews disabled, redacted by `RedactingPromptGateway` and fitted to one message keeping the start and the end of the input (the dangerous part of a long command is at its end). Telegram still auto-links bare URLs |
 | Another local process writes to the hooks socket | Socket with mode 0600 inside the user's directory | **Planned (F4)** |
-| No record of what was approved | Append-only audit: who, when, what and which verdict | **Implemented for F1 and F2 events.** `audit_log` table with triggers that reject `UPDATE` and `DELETE` (`src/adapters/storage/sqlite.ts`); no update or delete API (`SqliteAuditLog`). Every pairing and allowlist change is audited, without codes, tokens or message text. F2 adds `message.forwarded` (sender id, message id, length), `message.rate_limited`, `reply.sent` (chat id, parts, redaction count), `reply.refused`, `reply.failed`; never message text or secret values. Permission verdicts: **Planned (F3)** |
+| No record of what was approved | Append-only audit: who, when, what and which verdict | **Implemented (F1-F3).** `audit_log` table with triggers that reject `UPDATE` and `DELETE` (`src/adapters/storage/sqlite.ts`); no update or delete API (`SqliteAuditLog`). Every pairing and allowlist change is audited, without codes, tokens or message text. F2 adds `message.forwarded` (sender id, message id, length), `message.rate_limited`, `reply.sent` (chat id, parts, redaction count), `reply.refused`, `reply.failed`; never message text or secret values. F3 adds `permission.relayed` (tool, risk, rule ids), `permission.confirmation_requested`, `permission.approved` and `permission.denied` (who, tool, risk, button or text), `permission.verdict_failed`, `permission.expired`, `permission.resolved_locally`; never the description or the input |
 
 ## Additional F1 notes
 
@@ -47,6 +47,33 @@ This is the threat table from `docs/plan.md` ("Seguridad"), kept up to date. Sta
 - **Busy state is unknown.** The bot cannot tell whether Claude is mid-turn, so it never says
   "queued" yet; events still queue in the session (ADR 0005). F4 feeds `SessionActivity` from
   hooks.
+
+## Additional F3 notes
+
+- **Who can approve.** A verdict is sent only from `ResolvePermission`, after a button tap that
+  passed the tap path (private chat, the chat is the sender's own, `from.id` allowlisted, rate
+  limit, strict button data) or a text verdict that passed the whole inbound chain; the use case
+  checks the allowlist again. Unauthorized taps get no answer at all. The capability is declared
+  only with a bot token and the allowlist available; the dev HTTP listener cannot answer prompts.
+- **Fail closed.** Anything unexpected sends no verdict: a malformed request (not relayed), a
+  repeated id, a request of another session, a process that does not poll (not relayed), a
+  verdict that cannot be written (state back to pending), expiry (never a verdict). The terminal
+  dialog always stays open and authoritative.
+- **One verdict per request.** The decision is stored with compare-and-set before the verdict is
+  sent, so concurrent taps, copies on several phones and the expiry timer cannot double-send.
+- **At rest.** `permission_requests` keeps description and input only while a request is open;
+  closed rows keep the tool name, the outcome and who decided. Rows of another session are
+  expired when this process takes the poller lock (ADR 0007).
+- **Risk rules are a heuristic.** Patterns over the preview catch common destructive commands,
+  not every one (an obfuscated command, a script that deletes files, an MCP tool with harmful
+  effects). Low risk still needs an explicit tap; the second tap is an extra guard, not a
+  sandbox.
+- **Account takeover.** Anyone controlling the owner's Telegram account can approve tool use.
+  Telegram two-step verification remains the main control; TOTP for high-risk approvals is still
+  planned.
+- **Answered at the terminal.** Without a hook signal the phone keeps the buttons until expiry; a
+  tap then shows "Approved" while Claude Code drops the verdict for the closed id. F4's
+  `PostToolUse` hook narrows this.
 
 ## Known limits and open risks
 

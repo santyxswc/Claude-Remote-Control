@@ -1,7 +1,8 @@
 /**
- * The outbound pipeline (GoF Decorator over `ChatGateway`):
+ * The outbound pipeline (GoF Decorator):
  *
- *   RedactingChatGateway -> ChunkingChatGateway -> route -> TelegramChatGateway | DevChatGateway
+ *   text:    RedactingChatGateway -> ChunkingChatGateway -> route -> Telegram | Dev
+ *   prompts: RedactingPromptGateway (fits one message) -> route -> Telegram
  *
  * This module is the only place that constructs the raw platform gateway,
  * and `buildOutbound` is its only export, so nothing in the app can get hold
@@ -16,8 +17,11 @@ import {
 } from '../adapters/telegram/TelegramChatGateway.ts'
 import { ChunkingChatGateway } from '../application/outbound/ChunkingChatGateway.ts'
 import { RedactingChatGateway } from '../application/outbound/RedactingChatGateway.ts'
+import { RedactingPromptGateway } from '../application/outbound/RedactingPromptGateway.ts'
 import type { ChatGateway, SendOptions, SendReceipt } from '../application/ports/ChatGateway.ts'
+import type { PromptGateway, PromptKeyboard } from '../application/ports/PromptGateway.ts'
 import type { Sleeper } from '../application/ports/Sleeper.ts'
+import type { PromptRef } from '../domain/permissions/PermissionRequest.ts'
 import { createSecretRedactor } from '../domain/redaction/secretValues.ts'
 
 export interface OutboundOptions {
@@ -32,7 +36,7 @@ export interface OutboundOptions {
   readonly sleeper?: Sleeper
 }
 
-export function buildOutbound(options: OutboundOptions): ChatGateway {
+export function buildOutbound(options: OutboundOptions): ChatGateway & PromptGateway {
   const telegram =
     options.token === undefined
       ? undefined
@@ -45,17 +49,51 @@ export function buildOutbound(options: OutboundOptions): ChatGateway {
       ? options.literalSecrets
       : [...options.literalSecrets, options.token],
   )
-  const routed = new RoutingChatGateway(telegram, options.dev)
-  return new RedactingChatGateway(
-    new ChunkingChatGateway(routed, TELEGRAM_MAX_MESSAGE_LENGTH),
-    redactor,
+  const routed = new RoutingGateway(telegram, options.dev)
+  return new OutboundGateway(
+    new RedactingChatGateway(
+      new ChunkingChatGateway(routed, TELEGRAM_MAX_MESSAGE_LENGTH),
+      redactor,
+    ),
+    new RedactingPromptGateway(routed, redactor, TELEGRAM_MAX_MESSAGE_LENGTH),
   )
 }
 
-/** The dev chat id goes to the dev listener; every other chat goes to Telegram. */
-class RoutingChatGateway implements ChatGateway {
+/** One object for both decorated pipelines, so callers need a single gateway. */
+class OutboundGateway implements ChatGateway, PromptGateway {
   constructor(
-    private readonly telegram: ChatGateway | undefined,
+    private readonly chat: ChatGateway,
+    private readonly prompts: PromptGateway,
+  ) {}
+
+  sendText(chatId: string, text: string, options?: SendOptions): Promise<SendReceipt> {
+    return this.chat.sendText(chatId, text, options)
+  }
+
+  sendTyping(chatId: string): Promise<void> {
+    return this.chat.sendTyping(chatId)
+  }
+
+  sendPrompt(chatId: string, text: string, keyboard: PromptKeyboard): Promise<PromptRef> {
+    return this.prompts.sendPrompt(chatId, text, keyboard)
+  }
+
+  editPrompt(ref: PromptRef, text: string, keyboard: PromptKeyboard): Promise<void> {
+    return this.prompts.editPrompt(ref, text, keyboard)
+  }
+
+  answerCallback(callbackId: string, text?: string): Promise<void> {
+    return this.prompts.answerCallback(callbackId, text)
+  }
+}
+
+/**
+ * The dev chat id goes to the dev listener; every other chat goes to
+ * Telegram. Prompts (buttons) exist only on Telegram.
+ */
+class RoutingGateway implements ChatGateway, PromptGateway {
+  constructor(
+    private readonly telegram: TelegramChatGateway | undefined,
     private readonly dev: ChatGateway | undefined,
   ) {}
 
@@ -67,8 +105,24 @@ class RoutingChatGateway implements ChatGateway {
     return this.#target(chatId).sendTyping(chatId)
   }
 
+  async sendPrompt(chatId: string, text: string, keyboard: PromptKeyboard): Promise<PromptRef> {
+    return this.#telegram().sendPrompt(chatId, text, keyboard)
+  }
+
+  async editPrompt(ref: PromptRef, text: string, keyboard: PromptKeyboard): Promise<void> {
+    return this.#telegram().editPrompt(ref, text, keyboard)
+  }
+
+  async answerCallback(callbackId: string, text?: string): Promise<void> {
+    return this.#telegram().answerCallback(callbackId, text)
+  }
+
   #target(chatId: string): ChatGateway {
     if (chatId === DEV_CHAT_ID && this.dev !== undefined) return this.dev
+    return this.#telegram()
+  }
+
+  #telegram(): TelegramChatGateway {
     if (this.telegram !== undefined) return this.telegram
     throw new Error(
       'no chat platform is configured for this chat; run `bun run bridge -- init`, or use the dev listener',

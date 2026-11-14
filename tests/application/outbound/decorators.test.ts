@@ -2,9 +2,10 @@ import { describe, expect, test } from 'bun:test'
 import { EmptyMessageError, PartialDeliveryError } from '../../../src/application/errors.ts'
 import { ChunkingChatGateway } from '../../../src/application/outbound/ChunkingChatGateway.ts'
 import { RedactingChatGateway } from '../../../src/application/outbound/RedactingChatGateway.ts'
+import { RedactingPromptGateway } from '../../../src/application/outbound/RedactingPromptGateway.ts'
 import { REDACTION_MARK } from '../../../src/domain/redaction/SecretRedactor.ts'
 import { createSecretRedactor } from '../../../src/domain/redaction/secretValues.ts'
-import { FakeChatGateway } from '../../fakes.ts'
+import { FakeChatGateway, FakePromptGateway } from '../../fakes.ts'
 
 const SECRET = 'Zq8!vR2#pL-0042'
 
@@ -96,5 +97,38 @@ describe('redaction runs before chunking', () => {
     expect(sent).not.toContain(SECRET.slice(0, 8))
     expect(sent).not.toContain(SECRET.slice(8))
     expect(sent).toContain(REDACTION_MARK)
+  })
+})
+
+describe('RedactingPromptGateway', () => {
+  const keyboard = [[{ label: 'OK', data: 'p1:abcde:a' }]]
+
+  test('redacts prompts, edits and toasts; buttons pass through untouched', async () => {
+    const inner = new FakePromptGateway()
+    const gateway = new RedactingPromptGateway(inner, createSecretRedactor([SECRET]), 4096)
+    const ref = await gateway.sendPrompt('1', `run ${SECRET}`, keyboard)
+    await gateway.editPrompt(ref, `done ${SECRET}`, [])
+    await gateway.answerCallback('cb', `toast ${SECRET}`)
+    await gateway.answerCallback('cb2')
+    expect(inner.sent).toEqual([{ chatId: '1', text: `run ${REDACTION_MARK}`, keyboard }])
+    expect(inner.edits).toEqual([{ ref, text: `done ${REDACTION_MARK}`, keyboard: [] }])
+    expect(inner.answers).toEqual([
+      { callbackId: 'cb', text: `toast ${REDACTION_MARK}` },
+      { callbackId: 'cb2' },
+    ])
+  })
+
+  test('a prompt grown by redaction still fits one message, keeping both ends', async () => {
+    const inner = new FakePromptGateway()
+    const secrets = Array.from({ length: 400 }, (_, i) => `Qz${String(i).padStart(6, '0')}`)
+    const gateway = new RedactingPromptGateway(inner, createSecretRedactor(secrets), 3500)
+    const text = `HEAD ${secrets.join(' ')} TAIL`
+    expect(text.length).toBeLessThan(3700)
+    await gateway.sendPrompt('1', text, keyboard)
+    const sent = inner.sent[0]?.text ?? ''
+    expect(sent.length).toBeLessThanOrEqual(3500)
+    expect(sent.startsWith('HEAD ')).toBe(true)
+    expect(sent.endsWith(' TAIL')).toBe(true)
+    expect(sent).not.toContain('Qz000')
   })
 })

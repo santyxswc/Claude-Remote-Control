@@ -16,7 +16,8 @@ Code session. The approved design is `docs/plan.md` (Spanish); each flow has its
   composition roots and wire everything by hand (no DI container). Larger wiring lives in small
   factory modules under `src/composition/`, used only by those roots.
 - Outbound text always goes through `buildOutbound()` (`src/composition/outbound.ts`): redaction,
-  then chunking. Never construct `TelegramChatGateway` anywhere else; a test enforces it.
+  then chunking (prompts with buttons: redaction, then fitting to one message). Never construct
+  `TelegramChatGateway` anywhere else; a test enforces it.
 - `bun run check:arch` enforces the import rules; do not weaken it to make code pass.
 
 ## Runtime rules

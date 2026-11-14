@@ -130,3 +130,31 @@ describe('behaviour', () => {
     expect(api.callsTo('sendMessage')).toHaveLength(1)
   })
 })
+
+describe('prompts', () => {
+  test('prompt text is redacted (including the token) and buttons reach Telegram', async () => {
+    const api = new FakeTelegramApi()
+    const chat = buildOutbound({
+      token: TEST_TOKEN,
+      dev: undefined,
+      literalSecrets: ['Zq8!vR2#pL-0042'],
+      fetch: api.fetch,
+    })
+    const ref = await chat.sendPrompt('5000000001', `rm ${TEST_TOKEN} Zq8!vR2#pL-0042`, [
+      [{ label: 'OK', data: 'p1:abcde:a' }],
+    ])
+    await chat.editPrompt(ref, `done Zq8!vR2#pL-0042`, [])
+    expect(api.callsTo('sendMessage')[0]?.payload.text).toBe(
+      `rm ${REDACTION_MARK} ${REDACTION_MARK}`,
+    )
+    expect(api.callsTo('editMessageText')[0]?.payload.text).toBe(`done ${REDACTION_MARK}`)
+    expect(JSON.stringify(api.calls)).not.toContain('Zq8!')
+  })
+
+  test('without a token there is nowhere to send a prompt', async () => {
+    const chat = buildOutbound({ token: undefined, dev: new DevChatGateway(), literalSecrets: [] })
+    await expect(chat.sendPrompt(DEV_CHAT_ID, 'x', [])).rejects.toThrow(
+      'no chat platform is configured',
+    )
+  })
+})

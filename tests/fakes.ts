@@ -7,12 +7,18 @@ import type { Clock } from '../src/application/ports/Clock.ts'
 import type { InboundPoller, PollingExit } from '../src/application/ports/InboundPoller.ts'
 import type { LogFields, Logger } from '../src/application/ports/Logger.ts'
 import type { PairingStore } from '../src/application/ports/PairingStore.ts'
+import type { PermissionStore } from '../src/application/ports/PermissionStore.ts'
+import type {
+  PermissionVerdictPort,
+  VerdictBehavior,
+} from '../src/application/ports/PermissionVerdictPort.ts'
 import type {
   PollerLock,
   PollerLockHolder,
   PollerLockResult,
   PollerRole,
 } from '../src/application/ports/PollerLock.ts'
+import type { PromptGateway, PromptKeyboard } from '../src/application/ports/PromptGateway.ts'
 import type { RandomSource } from '../src/application/ports/RandomSource.ts'
 import type { SecretHasher } from '../src/application/ports/SecretHasher.ts'
 import type { ActivityState, SessionActivity } from '../src/application/ports/SessionActivity.ts'
@@ -20,6 +26,7 @@ import type { Sleeper } from '../src/application/ports/Sleeper.ts'
 import type { Terminal } from '../src/application/ports/Terminal.ts'
 import type { AllowedSender } from '../src/domain/AllowedSender.ts'
 import type { Pairing } from '../src/domain/Pairing.ts'
+import type { PermissionRequest, PromptRef } from '../src/domain/permissions/PermissionRequest.ts'
 import type { SenderProfile } from '../src/domain/Sender.ts'
 
 export class FakeChatGateway implements ChatGateway {
@@ -352,3 +359,65 @@ export const MALLORY: SenderProfile = {
   username: 'mallory',
   displayName: 'Mallory',
 }
+
+export class InMemoryPermissionStore implements PermissionStore {
+  readonly #rows = new Map<string, PermissionRequest>()
+
+  put(request: PermissionRequest): void {
+    this.#rows.delete(request.id)
+    this.#rows.set(request.id, request)
+  }
+
+  update(next: PermissionRequest, expectedRevision: number): boolean {
+    if (this.#rows.get(next.id)?.revision !== expectedRevision) return false
+    this.#rows.set(next.id, next)
+    return true
+  }
+
+  findById(id: string): PermissionRequest | undefined {
+    return this.#rows.get(id)
+  }
+
+  listOpen(): readonly PermissionRequest[] {
+    return [...this.#rows.values()]
+      .filter((request) => request.isOpen)
+      .sort((a, b) => a.createdAt - b.createdAt)
+  }
+}
+
+/** Records prompts, edits and answers; message ids count up from 500 per chat. */
+export class FakePromptGateway implements PromptGateway {
+  readonly sent: { chatId: string; text: string; keyboard: PromptKeyboard }[] = []
+  readonly edits: { ref: PromptRef; text: string; keyboard: PromptKeyboard }[] = []
+  readonly answers: { callbackId: string; text?: string }[] = []
+  failSendFor = new Set<string>()
+  onSend: (() => void) | undefined
+  #nextId = 500
+
+  async sendPrompt(chatId: string, text: string, keyboard: PromptKeyboard): Promise<PromptRef> {
+    if (this.failSendFor.has(chatId)) throw new Error('chat unreachable')
+    this.sent.push({ chatId, text, keyboard })
+    this.onSend?.()
+    return { chatId, messageId: String(this.#nextId++) }
+  }
+
+  async editPrompt(ref: PromptRef, text: string, keyboard: PromptKeyboard): Promise<void> {
+    this.edits.push({ ref, text, keyboard })
+  }
+
+  async answerCallback(callbackId: string, text?: string): Promise<void> {
+    this.answers.push(text === undefined ? { callbackId } : { callbackId, text })
+  }
+}
+
+export class FakeVerdicts implements PermissionVerdictPort {
+  readonly sent: { requestId: string; behavior: VerdictBehavior }[] = []
+  failWith: Error | undefined
+
+  async sendVerdict(requestId: string, behavior: VerdictBehavior): Promise<void> {
+    if (this.failWith !== undefined) throw this.failWith
+    this.sent.push({ requestId, behavior })
+  }
+}
+
+export const BOB: SenderProfile = { id: '222222222', username: undefined, displayName: 'Bob B' }

@@ -15,6 +15,13 @@ export type AuditEvent =
   | 'reply.sent'
   | 'reply.refused'
   | 'reply.failed'
+  | 'permission.relayed'
+  | 'permission.confirmation_requested'
+  | 'permission.approved'
+  | 'permission.denied'
+  | 'permission.verdict_failed'
+  | 'permission.expired'
+  | 'permission.resolved_locally'
 
 /** Values that are safe to persist: never tokens, codes or message text. */
 export type AuditDetails = Readonly<Record<string, string | number | boolean | null>>
