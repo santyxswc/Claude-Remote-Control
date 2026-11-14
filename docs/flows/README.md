@@ -19,13 +19,15 @@ or a live Claude Code session yet; the checklist below is how that happens.
 | [F5](F5.md) | Screenshots on demand | Implemented. Automated acceptance with fake capture programs. Two smoke tests passed on one Windows machine (page and screen). Live: Telegram delivery, Wayland and X11 pending |
 | [F6](F6.md) | Panic button `/stop` | Implemented. Automated acceptance, including the real `brakeHook.ts`. Live: effect of `continue: false` on a turn in flight, tmux Escape pending |
 | [F7](F7.md) | Options (`ask_choice`) and `/skills` | Implemented. Automated acceptance (`tests/acceptance/F7.test.ts`). Live: whether a slash command in a channel event runs, and how Claude acts on "Use the skill /name", pending |
+| [F8](F8.md) | Git from the chat (`/diff`, Commit / Revert / Open PR) | Implemented. Automated acceptance (`tests/acceptance/F8.test.ts`) with the real git on temp repositories, including a hostile configuration. Live: the document on the phone and how Claude carries out each instruction pending |
+| [F9](F9.md) | Pinned status message | Implemented. Automated acceptance (`tests/acceptance/F9.test.ts`) with hook events and a fake clock. Live: silent pin and edits, 429 rate for edits pending |
 | [F10](F10.md) | Incoming images and files | Implemented. Automated acceptance (`tests/acceptance/F10.test.ts`) with a fake `getFile` and download. Live: real photo sizes, albums, `getFile` on real files pending |
 
-The other later flows (F8, F9, F11 to F15) are in [../roadmap.md](../roadmap.md).
+The other later flows (F11 to F15) are in [../roadmap.md](../roadmap.md).
 
 Where a flow doc and the code differ, the code wins. Known cases are listed in the architecture
 and roadmap notes; for instance F2's command list (`/start`, `/help`, `/status`) has since grown
-with `/stop`, `/resume`, `/shot` and `/skills`, and F2's "only text" notice now reads "only text,
+with `/stop`, `/resume`, `/shot`, `/skills`, `/diff`, `/pin` and `/unpin`, and F2's "only text" notice now reads "only text,
 photos and files" once F10 is wired.
 
 ## Live-validation checklist
@@ -276,10 +278,42 @@ Source: [F10](F10.md), manual verification.
 - [ ] **[All]** `/status` shows the inbox. A new session removes the old session's inbox.
 - [ ] **[All]** The bot token appears nowhere in stderr (`claude --debug`) or the audit.
 
-### Part 10: Wrap-up
+### Part 10: Git from the chat (F8)
+
+Source: [F8](F8.md), manual verification. In a git repository with one staged, one unstaged and
+one new file.
+
+- [ ] **[All]** `/diff`: a `changes.diff` document captioned with the summary (branch, counts,
+  +/−), then three buttons. Record how the phone shows the file.
+- [ ] **[All]** A fake `ghp_…` token in a changed file shows as `[REDACTED]` in the document.
+- [ ] **[All]** `/diff src` narrows the diff. `/diff ../x`, `/diff -p` and `/diff :/` are refused.
+  With no changes: "No changes".
+- [ ] **[All]** Commit: the toast, the buttons replaced, the session gets the instruction, and Claude
+  asks before `git commit`. **Record what Claude runs.**
+- [ ] **[All]** Revert asks for Confirm; Cancel sends nothing; Confirm sends the revert instruction.
+- [ ] **[All]** Braked: `/diff` still works, and a button gets the brake toast. `/status` shows the
+  git line.
+- [ ] **[Linux]** In a throwaway repository, `git config diff.external 'touch /tmp/pwned'`, then
+  `/diff`: `/tmp/pwned` does not appear.
+
+### Part 11: Pinned status (F9)
+
+Source: [F9](F9.md), manual verification. Needs the hooks (Part 5).
+
+- [ ] **[All]** `/pin`: a pinned message. **Record whether the phone buzzed** for the message, the
+  pin or any later edit (expected: never).
+- [ ] **[All]** While Claude works: "working since", "Last tool: Bash · <description>" (never the
+  command), at most one change every 5 s. A permission prompt shows "waiting for your answer".
+- [ ] **[All]** The turn ends: "idle since", "Last finished". No further edits while nothing changes.
+- [ ] **[All]** `/stop` shows "braked"; `/resume` clears it.
+- [ ] **[All]** Delete the pinned message: one new one is sent and pinned; delete that too: no third.
+- [ ] **[All]** Exit Claude Code: "session ended". Start again: the same message is edited.
+  `/unpin` stops updates.
+
+### Part 12: Wrap-up
 
 - [ ] **[All]** Record every "needs live verification" outcome in the ADRs: 0005 (findings), 0003
-  (`onFailure` on a Claude Code older than 2.1.295 ignoring the unknown key), 0009 (plugin items), 0011 (skills from the chat, albums), and
+  (`onFailure` on a Claude Code older than 2.1.295 ignoring the unknown key), 0009 (plugin items), 0011 (skills from the chat, albums), 0012 (git instructions), 0013 (silent status), and
   the open points of each flow doc.
 - [ ] **[All]** Remove the throwaway directory, unset the variables, and repeat `init` and `pair` for real.
 - [ ] **[All]** Update the README: the exact install commands for the plugin route, the minimum Claude Code

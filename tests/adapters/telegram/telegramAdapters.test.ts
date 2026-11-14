@@ -14,6 +14,10 @@ import {
   toInboundMessage,
 } from '../../../src/adapters/telegram/toInboundMessage.ts'
 import { BotUnreachableError, InvalidBotTokenError } from '../../../src/application/errors.ts'
+import {
+  StatusFloodWaitError,
+  StatusMessageGoneError,
+} from '../../../src/application/ports/StatusMessageGateway.ts'
 import { FakeClock, FakeSleeper } from '../../fakes.ts'
 import { FakeTelegramApi, TEST_TOKEN } from '../../fakeTelegram.ts'
 
@@ -373,5 +377,99 @@ describe('toInboundCallback', () => {
       sender: undefined,
       data: undefined,
     })
+  })
+})
+
+describe('TelegramChatGateway documents and the status message (F8, F9)', () => {
+  const ref = { chatId: '5000000001', messageId: '77' }
+
+  test('sendDocument uploads the text from memory with its name and caption', async () => {
+    const api = new FakeTelegramApi()
+    const gateway = new TelegramChatGateway(TEST_TOKEN, { fetch: api.fetch })
+    const receipt = await gateway.sendDocument(
+      '5000000001',
+      { filename: 'changes.diff', text: '+ñ\n', maxBytes: 100, cutNote: '' },
+      'summary',
+    )
+    expect(api.callsTo('sendDocument')[0]?.payload).toMatchObject({
+      chat_id: '5000000001',
+      caption: 'summary',
+    })
+    expect(api.uploads).toHaveLength(1)
+    expect(api.uploads[0]?.filename).toBe('changes.diff')
+    expect(new TextDecoder().decode(api.uploads[0]?.bytes)).toBe('+ñ\n')
+    expect(receipt.bytes).toBe(4)
+  })
+
+  test('the status is sent silently without preview, edited, pinned silently and unpinned', async () => {
+    const api = new FakeTelegramApi()
+    const gateway = new TelegramChatGateway(TEST_TOKEN, { fetch: api.fetch })
+    const sent = await gateway.sendStatus('5000000001', 'State: idle')
+    expect(sent).toEqual({ chatId: '5000000001', messageId: '1000' })
+    expect(api.callsTo('sendMessage')[0]?.payload).toMatchObject({
+      text: 'State: idle',
+      disable_notification: true,
+      link_preview_options: { is_disabled: true },
+    })
+    expect(api.callsTo('sendMessage')[0]?.payload.reply_markup).toBeUndefined()
+    await gateway.editStatus(sent, 'State: working')
+    await gateway.pinStatus(sent)
+    await gateway.unpinStatus(sent)
+    expect(api.callsTo('editMessageText')[0]?.payload).toMatchObject({
+      message_id: 1000,
+      text: 'State: working',
+    })
+    expect(api.callsTo('pinChatMessage')[0]?.payload).toMatchObject({
+      chat_id: '5000000001',
+      message_id: 1000,
+      disable_notification: true,
+    })
+    expect(api.callsTo('unpinChatMessage')[0]?.payload).toMatchObject({ message_id: 1000 })
+  })
+
+  test('a 429 is one attempt and a flood-wait error: no sleeping, no retry', async () => {
+    const api = new FakeTelegramApi()
+    const sleeper = new FakeSleeper(new FakeClock())
+    const gateway = new TelegramChatGateway(TEST_TOKEN, { fetch: api.fetch, sleeper })
+    api.script('editMessageText', {
+      ok: false,
+      error_code: 429,
+      description: 'Too Many Requests: retry after 17',
+      parameters: { retry_after: 17 },
+    })
+    const error = await gateway.editStatus(ref, 'x').catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(StatusFloodWaitError)
+    expect((error as StatusFloodWaitError).retryAfterMs).toBe(17_000)
+    expect(api.callsTo('editMessageText')).toHaveLength(1)
+    expect(sleeper.naps).toEqual([])
+  })
+
+  test.each([
+    'Bad Request: message to edit not found',
+    "Bad Request: message can't be edited",
+    'Bad Request: message to pin not found',
+    'Bad Request: MESSAGE_ID_INVALID',
+  ])('%p means the message is gone', async (description) => {
+    const api = new FakeTelegramApi()
+    const gateway = new TelegramChatGateway(TEST_TOKEN, { fetch: api.fetch })
+    api.script('editMessageText', { ok: false, error_code: 400, description })
+    api.script('pinChatMessage', { ok: false, error_code: 400, description })
+    await expect(gateway.editStatus(ref, 'x')).rejects.toBeInstanceOf(StatusMessageGoneError)
+    await expect(gateway.pinStatus(ref)).rejects.toBeInstanceOf(StatusMessageGoneError)
+  })
+
+  test('an unchanged edit is fine; other failures carry no token', async () => {
+    const api = new FakeTelegramApi()
+    const gateway = new TelegramChatGateway(TEST_TOKEN, { fetch: api.fetch })
+    api.script('editMessageText', {
+      ok: false,
+      error_code: 400,
+      description: 'Bad Request: message is not modified',
+    })
+    await gateway.editStatus(ref, 'x')
+    api.script('unpinChatMessage', { networkError: `ECONNRESET bot${TEST_TOKEN}` })
+    const error = await gateway.unpinStatus(ref).catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(TelegramCallError)
+    expect(String((error as Error).message)).not.toContain(TEST_TOKEN)
   })
 })

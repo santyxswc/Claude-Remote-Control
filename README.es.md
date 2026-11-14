@@ -13,8 +13,8 @@ proyecto ([ADR 0001](docs/adr/0001-own-bot-per-user.md)).
 
 ## Estado
 
-El MVP (flujos F0 a F6) y dos flujos de la fase 3 (F7 opciones y skills, F10 archivos entrantes)
-están implementados y cubiertos por pruebas automáticas que usan dobles de
+El MVP (flujos F0 a F6) y cuatro flujos de la fase 3 (F7 opciones y skills, F8 git desde el chat,
+F9 mensaje de estado fijado, F10 archivos entrantes) están implementados y cubiertos por pruebas automáticas que usan dobles de
 Telegram y de Claude Code, más dos pruebas de humo locales para las capturas. **Todavía no se ha
 validado de punta a punta contra la API real de Telegram ni contra una sesión viva de Claude
 Code.** Varios comportamientos de Claude Code figuran como "necesita verificación en vivo" en los
@@ -57,9 +57,16 @@ Después del MVP:
 8. **Fotos y archivos.** Envía una foto o un documento (imágenes, PDF, texto y código fuente) y
    Claude recibe la ruta de una copia local privada. El tipo se comprueba por extensión y por
    contenido, el límite es 20 MB y los archivos se borran a las 24 horas ([F10](docs/flows/F10.md)).
+9. **Git desde el chat.** `/diff` envía un resumen y los cambios sin commit como un archivo `.diff`
+   censado. Los botones Commit, Revertir y Abrir PR le envían a Claude una instrucción fija cada
+   uno, y Claude sigue pidiendo permiso para cada comando. El puente solo lee el repositorio, con
+   git blindado contra la configuración del repositorio que ejecuta programas
+   ([F8](docs/flows/F8.md)).
+10. **Mensaje de estado fijado.** `/pin` fija un mensaje con el estado de la sesión, su última
+    herramienta y las aprobaciones y preguntas pendientes, editado en el sitio a partir de los
+    eventos de los hooks y nunca escrito por Claude. `/unpin` lo quita ([F9](docs/flows/F9.md)).
 
-Pendiente (ver [docs/roadmap.md](docs/roadmap.md), en inglés): git desde el chat, mensaje fijado
-de estado, gráficas, resumen de sesión a memoria, notas de voz, un topic por proyecto y la Mini App con pantalla en
+Pendiente (ver [docs/roadmap.md](docs/roadmap.md), en inglés): gráficas, resumen de sesión a memoria, notas de voz, un topic por proyecto y la Mini App con pantalla en
 vivo. Contestar llamadas de Telegram queda fuera de alcance: la Bot API no lo permite.
 
 El MVP es un bot para una sola sesión de Claude Code.
@@ -87,6 +94,7 @@ Herramientas opcionales:
 
 | Herramienta | Para qué | Notas |
 | --- | --- | --- |
+| git | `/diff` y la línea de git de `/status` | Se busca en el `PATH` al arrancar. Solo se ejecutan comandos de lectura ([ADR 0012](docs/adr/0012-read-only-git-adapter.md)). |
 | tmux | `/stop` además envía Escape para interrumpir el turno en curso | Solo Linux y macOS, y solo si Claude Code corre dentro de un panel de tmux. Sin tmux, `/stop` bloquea la siguiente herramienta. En Windows no hay equivalente. |
 | Un navegador de la familia Chromium (Chromium, Chrome, Brave, Edge) | `/shot <url>` | Se busca en el `PATH` y en las rutas de instalación habituales; o define `TELEGRAM_BRIDGE_BROWSER`. Corre sin interfaz y con un perfil desechable ([ADR 0010](docs/adr/0010-headless-browser-instead-of-playwright.md)). |
 | Linux, Wayland: `grim`, `spectacle` o `gnome-screenshot` | `/shot` (pantalla) | Se prueban en ese orden. |
@@ -183,12 +191,15 @@ Se envían al bot desde una cuenta emparejada, en chat privado. Cualquier otro t
 | --- | --- |
 | `/start` | Comprueba que el puente está conectado. |
 | `/help` | Lista los comandos. |
-| `/status` | Bot, emparejado desde, conexión MCP, permisos pendientes, estado del freno, tipos de captura disponibles y archivos recibidos guardados. |
+| `/status` | Bot, emparejado desde, conexión MCP, permisos pendientes, estado del freno, tipos de captura disponibles, archivos recibidos guardados y una línea de git (rama, adelante/atrás, archivos cambiados). |
 | `/stop [motivo]` | Activa el freno, deniega los permisos pendientes y, dentro de tmux en Linux o macOS, envía Escape. |
 | `/resume` | Retira el freno. Claude no reanuda por sí solo. |
 | `/shot` | Captura de la pantalla. |
 | `/shot <url>` | Captura de una página `http`/`https`, por ejemplo `/shot localhost:3000`. |
 | `/skills` | Lista como botones las skills del proyecto y las personales; un toque envía "Use the skill /nombre" a Claude. |
+| `/diff [ruta]` | Envía los cambios sin commit (preparados, sin preparar y la lista de archivos sin seguimiento) como un archivo `.diff` censado, con botones Commit, Revertir y Abrir PR. Funciona con el freno puesto. |
+| `/pin` | Fija un mensaje de estado que sigue a la sesión (estado, última herramienta, pendientes). Apagado hasta que lo envíes. |
+| `/unpin` | Quita el mensaje de estado fijado y deja de actualizarlo. |
 
 Los permisos también aceptan `yes <id>` o `no <id>` como texto (el id aparece en la solicitud; con
 `si <id>` también funciona). Las solicitudes de riesgo alto solo se aprueban con los botones.
@@ -224,7 +235,7 @@ Todo son variables de entorno opcionales.
 | `TELEGRAM_BRIDGE_LOCALE` | `es` | `en` para inglés. |
 | `TELEGRAM_BRIDGE_BROWSER` | autodetectado | Ruta absoluta del navegador para `/shot <url>`. Un valor inválido desactiva las capturas de páginas. |
 | `TELEGRAM_BRIDGE_MAX_UPLOAD_MB` | `20` | Tamaño máximo de un archivo entrante, en MB enteros de 1 a 20 (20 es el límite de descarga de la Bot API; solo se puede bajar). Otro valor se registra y se usa 20. |
-| `CLAUDE_PROJECT_DIR` | lo define Claude Code | El proyecto cuyas `.claude/skills` lista `/skills`. Si no está definido o es relativo, se usa el directorio de trabajo cuando tiene `.claude/` o `.git`; si no, solo se listan las skills personales. |
+| `CLAUDE_PROJECT_DIR` | lo define Claude Code | El proyecto cuyas `.claude/skills` lista `/skills`. Si no está definido o es relativo, se usa el directorio de trabajo cuando tiene `.claude/` o `.git`; si no, solo se listan las skills personales. `/diff` y el mensaje de estado también lo usan (si no, el directorio de trabajo). |
 | `TELEGRAM_BRIDGE_DEBUG` | sin definir | `1` imprime diagnósticos en stderr desde los scripts de hooks. |
 | `TELEGRAM_BRIDGE_DEV_PORT` | sin definir | Solo desarrollo, sin bot: un listener HTTP local (F0) que exige el token bearer que imprime una vez en stderr, rechaza peticiones de navegador (`Origin`, `Host` ajeno) y no arranca si hay un token de bot configurado. Déjala sin definir. |
 
@@ -249,6 +260,12 @@ Lee esto antes de usarlo.
   tipos y tamaños, nunca ejecuta archivos, y Claude los lee solo con sus herramientas normales, sujetas
   a permisos.
 - **Un botón de opción es solo una respuesta.** Envía texto a Claude; nunca aprueba una herramienta.
+- **`/diff` saca código del PC.** El archivo va censado, pero solo se detectan los secretos
+  reconocibles. Los botones Commit, Revertir y Abrir PR son instrucciones, no aprobaciones: Claude
+  pide permiso antes de cada comando.
+- **El mensaje de estado fijado es metadato de actividad.** Nombre del proyecto, nombres de
+  herramientas y de archivos y descripciones de comandos quedan en un chat que Telegram puede leer.
+  Está apagado hasta `/pin`.
 - **Nunca uses `--dangerously-skip-permissions` con esto.** El relay de permisos existe para no
   necesitarlo.
 - **El flag de canal de desarrollo.** Un canal propio no está en la lista aprobada por Anthropic, así
@@ -294,6 +311,12 @@ Modelo completo y límites conocidos: [docs/threat-model.md](docs/threat-model.m
   [F10](docs/flows/F10.md#allowlist) y el contenido debe corresponder a la extensión; el límite es
   20 MB (o `TELEGRAM_BRIDGE_MAX_UPLOAD_MB`). Los archivos recibidos se guardan en
   `<directorio de estado>/inbox/` durante 24 horas.
+- **`/diff` dice que el directorio no es un repositorio git.** Lee `CLAUDE_PROJECT_DIR` o, si no,
+  el directorio donde arrancó Claude Code. "Un filtro que el puente no puede desactivar con
+  seguridad" significa que la configuración del repositorio tiene un filtro cuyo nombre contiene
+  `=` o un salto de línea (o una lista de filtros demasiado larga).
+- **El mensaje fijado dice "desconocido".** No han llegado eventos de los hooks: instala el plugin
+  (o el fragmento de hooks de [F4](docs/flows/F4.md)).
 - **`/skills` no muestra nada del proyecto.** Claude Code define `CLAUDE_PROJECT_DIR`; si el canal se
   arranca de otra forma, debe correr en el directorio del proyecto. Las skills de plugins no se listan.
 
@@ -315,7 +338,7 @@ bun run check   # lint, tipos, reglas de arquitectura y pruebas (lo que corre la
 ```
 
 Estructura: `src/domain` (reglas puras), `src/application` (puertos y casos de uso), `src/adapters`
-(Telegram, MCP, SQLite, capturas, IPC, sesión), `src/composition` y los cuatro puntos de entrada
+(Telegram, MCP, SQLite, capturas, git, IPC, sesión), `src/composition` y los cuatro puntos de entrada
 (`main.ts`, `cli.ts`, `hook.ts`, `brakeHook.ts`), `hooks/`, `skills/`, `tests/`, `docs/`. Ver
 [CONTRIBUTING.md](CONTRIBUTING.md) y [CLAUDE.md](CLAUDE.md).
 

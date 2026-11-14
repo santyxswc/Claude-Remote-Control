@@ -92,15 +92,23 @@ describe('payload projection', () => {
       cwd: '/repo',
       transcript_path: '/x.jsonl',
       tool_name: 'Write',
-      tool_input: { file_path: '/repo/a.ts', content: 'x'.repeat(10_000), nested: { a: 1 } },
+      tool_input: {
+        file_path: '/repo/a.ts',
+        content: 'x'.repeat(10_000),
+        old_string: 'secret before',
+        new_string: 'secret after',
+        description: 'd'.repeat(2000),
+        nested: { a: 1 },
+      },
       tool_response: { huge: 'y'.repeat(100_000) },
     })
+    // Only the allowlisted fields (F9): never `content`, `old_string`, `new_string`.
     expect(projected).toEqual({
       hook_event_name: 'PostToolUse',
       session_id: 's',
       cwd: '/repo',
       tool_name: 'Write',
-      tool_input: { file_path: '/repo/a.ts', content: 'x'.repeat(1024) },
+      tool_input: { file_path: '/repo/a.ts', description: 'd'.repeat(1024) },
     })
     expect(
       projectHookPayload('UserPromptSubmit', { hook_event_name: 'UserPromptSubmit', prompt: 'hi' }),
@@ -120,7 +128,11 @@ describe('payload projection', () => {
     const stop = projectHookPayload('Stop', { last_assistant_message: control, cwd: control })
     const tool = projectHookPayload('PostToolUse', {
       tool_name: control,
-      tool_input: Object.fromEntries(Array.from({ length: 50 }, (_, i) => [`k${i}`, control])),
+      tool_input: Object.fromEntries(
+        ['command', 'file_path', 'notebook_path', 'url', 'pattern', 'path', 'description'].map(
+          (key) => [key, control],
+        ),
+      ),
     })
     for (const payload of [stop, tool]) {
       const frame = encodeFrame(new Uint8Array(32), JSON.stringify(payload))

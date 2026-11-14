@@ -4,8 +4,8 @@
  * Bigger pieces of wiring live in `src/composition/`.
  */
 import { existsSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { devNull, homedir } from 'node:os'
+import { isAbsolute, join } from 'node:path'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import packageJson from '../package.json' with { type: 'json' }
 import { createScreenCapturers } from './adapters/capture/createScreenCapturers.ts'
@@ -17,11 +17,12 @@ import {
   startDevHttpInbound,
 } from './adapters/dev/DevHttpInbound.ts'
 import { DEV_PORT_ENV, devListenerPort } from './adapters/dev/devPort.ts'
+import { GitCli } from './adapters/git/GitCli.ts'
 import { RedactingLogger } from './adapters/logging/RedactingLogger.ts'
 import { StderrLogger } from './adapters/logging/StderrLogger.ts'
 import { McpChannelServer } from './adapters/mcp/McpChannelServer.ts'
 import { createSessionController } from './adapters/session/createSessionController.ts'
-import { spawnProcess } from './adapters/session/processRunner.ts'
+import { spawnCapturing, spawnProcess } from './adapters/session/processRunner.ts'
 import { DiskSkillFiles, resolveProjectDir } from './adapters/skills/DiskSkillFiles.ts'
 import { TOKEN_ENV } from './adapters/storage/DotEnvTokenStore.ts'
 import { openState, type StateStores } from './adapters/storage/openState.ts'
@@ -37,6 +38,7 @@ import { buildSendReply } from './composition/replies.ts'
 import { buildScreenshots } from './composition/screenshots.ts'
 import { startTelegramInbound, type TelegramInbound } from './composition/telegramInbound.ts'
 import { maxUploadBytes } from './domain/attachments/attachmentPolicy.ts'
+import { projectName } from './domain/notices/sessionNotices.ts'
 import { selectSecretValues } from './domain/redaction/secretValues.ts'
 
 const SERVER_NAME = 'telegram-bridge'
@@ -183,6 +185,17 @@ if (state !== undefined && token === undefined) {
     logger.warn(`${MAX_UPLOAD_ENV} must be a whole number of MB from 1 to 20; using 20`)
   }
   const knownProject = resolveProjectDir(env, process.cwd(), existsSync)
+  // F8: git runs in the project (CLAUDE_PROJECT_DIR, else the directory we started in).
+  const gitDir = projectDir !== undefined && isAbsolute(projectDir) ? projectDir : process.cwd()
+  const project = projectName(gitDir)
+  const git = new GitCli({
+    // Resolved once, from PATH: never a `git` sitting in the project directory.
+    gitPath: Bun.which('git') ?? undefined,
+    cwd: gitDir,
+    env,
+    devNull,
+    run: spawnCapturing,
+  })
   let configDir: string | undefined
   try {
     configDir = resolveClaudeConfigDir(env, homedir())
@@ -214,6 +227,8 @@ if (state !== undefined && token === undefined) {
         userSkillsDir: configDir === undefined ? undefined : join(configDir, 'skills'),
         logger,
       }),
+      git,
+      ...(project === undefined ? {} : { project }),
     })
   } catch (error) {
     logger.error('telegram setup failed; serving MCP without it', { error })

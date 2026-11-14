@@ -25,8 +25,21 @@ const LIMITS = {
   toolField: 1024,
 } as const
 
-/** Worst case (every character JSON-escaped to six bytes) stays far below the frame cap. */
-const MAX_TOOL_FIELDS = 16
+/**
+ * The `tool_input` fields forwarded, and nothing else (no `content`,
+ * `old_string`, `new_string`...): the ones that identify a call, to close a
+ * prompt answered at the terminal (F4), and `description`, the shell tools'
+ * one-line summary for the pinned status (F9).
+ */
+const TOOL_FIELDS = [
+  'command',
+  'file_path',
+  'notebook_path',
+  'url',
+  'pattern',
+  'path',
+  'description',
+] as const
 
 type Json = Record<string, unknown>
 
@@ -81,10 +94,11 @@ function isHighSurrogate(code: number): boolean {
   return code >= 0xd800 && code <= 0xdbff
 }
 
-/** Top-level string fields only, each cut to its head (where the identifying part is). */
+/** The allowlisted top-level string fields, each cut to its head (where the identifying part is). */
 function stringFields(input: Json): Json {
   const out: Json = {}
-  for (const [key, value] of Object.entries(input).slice(0, MAX_TOOL_FIELDS)) {
+  for (const key of TOOL_FIELDS) {
+    const value = input[key]
     if (typeof value === 'string') out[key] = value.slice(0, LIMITS.toolField)
   }
   return out

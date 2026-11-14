@@ -3,6 +3,7 @@ import { DROPPED_LOG_WINDOW_MS } from '../../domain/inboundLimits.ts'
 import type { SenderProfile } from '../../domain/Sender.ts'
 import { TokenBucket } from '../../domain/TokenBucket.ts'
 import { parseChoiceCallback } from '../choices/choiceCallbackData.ts'
+import { parseGitCallback } from '../git/gitCallbackData.ts'
 import type { Messages } from '../i18n/messages.ts'
 import { parsePermissionCallback } from '../permissions/callbackData.ts'
 import type { Clock } from '../ports/Clock.ts'
@@ -12,6 +13,7 @@ import type { SkillsMenu } from '../skills/SkillsMenu.ts'
 import { parseSkillCallback } from '../skills/skillCallbackData.ts'
 import type { AnswerChoice } from '../use-cases/AnswerChoice.ts'
 import type { AuthorizeSender } from '../use-cases/AuthorizeSender.ts'
+import type { RequestGitAction } from '../use-cases/RequestGitAction.ts'
 import type { RequestSkill } from '../use-cases/RequestSkill.ts'
 import type { ResolvePermission } from '../use-cases/ResolvePermission.ts'
 import type { InboundCallback } from './InboundCallback.ts'
@@ -27,6 +29,8 @@ export interface ButtonTapHandlerDeps {
     readonly menu: Pick<SkillsMenu, 'showPage'>
     readonly request: Pick<RequestSkill, 'execute'>
   }
+  /** `/diff` buttons (`g1:`, F8): fixed instructions to the session; without it they are ignored. */
+  readonly git?: Pick<RequestGitAction, 'execute'>
   /** Only `answerCallback` is used here. */
   readonly prompts: Pick<PromptGateway, 'answerCallback'>
   readonly messages: Messages
@@ -50,7 +54,7 @@ interface AuthorizedTap {
  * Allowlisted taps are always answered so the client's spinner stops.
  *
  * Then the data is routed by its versioned prefix. Each parser is strict and
- * anchored and the prefixes differ, so a choice or skill button can never
+ * anchored and the prefixes differ, so a choice, skill or git button can never
  * reach `ResolvePermission`, nor a permission button anything else.
  * Unknown data is answered with nothing.
  */
@@ -119,6 +123,10 @@ export class ButtonTapHandler {
         return undefined
       }
       return messages.skillFeedback(await skills.request.execute({ key: skill.key, ...tap }))
+    }
+    const git = parseGitCallback(data)
+    if (git !== undefined && this.deps.git !== undefined) {
+      return messages.gitTapFeedback(await this.deps.git.execute({ ...git, ...tap }))
     }
     logger.warn('ignored a button tap with unknown data', { senderId: tap.sender.id })
     return undefined

@@ -88,6 +88,7 @@ describe('routing by prefix', () => {
     const choiceCalls: unknown[] = []
     const skillCalls: unknown[] = []
     const pages: unknown[] = []
+    const gitCalls: unknown[] = []
     const handler = new ButtonTapHandler({
       authorize: new AuthorizeSender(h.allowed),
       resolve: h.resolve,
@@ -106,12 +107,18 @@ describe('routing by prefix', () => {
           },
         },
       },
+      git: {
+        execute: async (input) => {
+          gitCalls.push(input)
+          return 'sent'
+        },
+      },
       prompts: h.gateway,
       messages: en,
       clock: h.clock,
       logger: h.logger,
     })
-    return { ...h, handler, choiceCalls, skillCalls, pages }
+    return { ...h, handler, choiceCalls, skillCalls, pages, gitCalls }
   }
 
   test('a choice tap goes to the choices only and is never a verdict', async () => {
@@ -162,6 +169,40 @@ describe('routing by prefix', () => {
     const h = await routed()
     await h.handler.handle(tap({ sender: MALLORY, chatId: MALLORY.id, data: 'c1:abcdefghij:0' }))
     expect(h.choiceCalls).toEqual([])
+    expect(h.gateway.answers).toEqual([])
+  })
+
+  test('a git tap goes to the git actions only and is never a verdict', async () => {
+    const h = await routed()
+    await h.handler.handle(tap({ data: 'g1:c:s1a2b3', messageId: '9' }))
+    expect(h.gitCalls).toEqual([
+      {
+        button: 'commit',
+        issuedAt: Number.parseInt('s1a2b3', 36) * 1000,
+        sender: ALICE,
+        chatId: ALICE.id,
+        messageId: '9',
+      },
+    ])
+    expect(h.verdicts.sent).toEqual([])
+    expect(h.store.findById('abcde')?.state).toBe('pending')
+    expect(h.gateway.answers).toEqual([{ callbackId: 'cb1', text: en.gitTapFeedback('sent') }])
+  })
+
+  test.each(['g1:a:abc', 'g1:c', 'g1:c:abc:x', 'g2:c:abc', 'g1:c:abcde:a'])(
+    'malformed git data %p reaches nothing',
+    async (data) => {
+      const h = await routed()
+      await h.handler.handle(tap({ data }))
+      expect(h.gitCalls).toEqual([])
+      expect(h.verdicts.sent).toEqual([])
+    },
+  )
+
+  test('a stranger git tap is dropped before routing', async () => {
+    const h = await routed()
+    await h.handler.handle(tap({ sender: MALLORY, chatId: MALLORY.id, data: 'g1:c:abc' }))
+    expect(h.gitCalls).toEqual([])
     expect(h.gateway.answers).toEqual([])
   })
 })

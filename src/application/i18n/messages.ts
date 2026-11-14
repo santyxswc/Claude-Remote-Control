@@ -5,6 +5,7 @@
  */
 import type { CaptureKind } from '../../domain/capture/CaptureTarget.ts'
 import { sanitizeDisplayText, sanitizeUsername } from '../../domain/displayText.ts'
+import type { DiffPathProblem } from '../../domain/git/diffPathFilter.ts'
 import type { PermissionOutcome } from '../permissions/PermissionOutcome.ts'
 import type { CaptureUnavailable } from '../ports/ScreenCapturer.ts'
 
@@ -33,6 +34,61 @@ export interface StatusView {
   readonly captureKinds?: readonly CaptureKind[]
   /** Files received and kept (F10); undefined when incoming files are not wired. */
   readonly inbox?: { readonly files: number; readonly bytes: number }
+  /** One line about the project's git work tree (F8); undefined when unknown. */
+  readonly git?: GitStatusLineView
+}
+
+/** `/status`'s git line (F8). Branch names come from the repository: untrusted. */
+export type GitStatusLineView =
+  | { readonly kind: 'not_a_repo' }
+  | {
+      readonly kind: 'repo'
+      readonly branch: string | undefined
+      readonly ahead: number | undefined
+      readonly behind: number | undefined
+      readonly staged: number
+      readonly unstaged: number
+      readonly untracked: number
+      readonly conflicted: number
+    }
+
+/** The caption of the `.diff` document (F8). Names come from the repository: untrusted. */
+export interface DiffSummaryView {
+  readonly project: string | undefined
+  readonly status: Extract<GitStatusLineView, { kind: 'repo' }>
+  readonly files: number
+  readonly insertions: number
+  readonly deletions: number
+  readonly binary: number
+  readonly pathFilter: string | undefined
+}
+
+export type DiffProblemView =
+  | { readonly problem: 'not_a_repo' | 'git_missing' | 'unsafe_config' | 'busy' | 'failed' }
+  | { readonly problem: 'invalid_path'; readonly reason: DiffPathProblem }
+  | {
+      readonly problem: 'no_changes'
+      readonly branch: string | undefined
+      readonly pathFilter: string | undefined
+    }
+
+/** What a `/diff` button asks the session to do (F8). */
+export type GitAction = 'commit' | 'revert' | 'pr'
+
+/** What a tap on a `/diff` button did. */
+export type GitTapOutcome = 'sent' | 'confirm' | 'cancelled' | 'expired' | 'braked'
+
+/** The pinned status message (F9); every field comes from hooks or the bridge, never from Claude's text. */
+export interface PinnedStatusView {
+  readonly project: string | undefined
+  readonly state: 'unknown' | 'idle' | 'working' | 'waiting' | 'braked' | 'ended'
+  /** Local time `HH:MM` the state began. */
+  readonly since: string | undefined
+  /** Already sanitized and short (`summarizeToolUse`). */
+  readonly activity: { readonly tool: string; readonly detail?: string } | undefined
+  readonly pendingPermissions: number
+  readonly pendingChoices: number
+  readonly lastFinished: string | undefined
 }
 
 /** What a tap on a choice button (or the typed "other" answer) did. */
@@ -218,6 +274,42 @@ export interface Messages {
   // Bot: incoming files (F10)
   readonly attachmentRefused: (view: AttachmentRefusalView) => string
 
+  // Bot: git from the chat (F8)
+  readonly commandDiffDescription: string
+  readonly diffProblem: (view: DiffProblemView) => string
+  /** The document's caption (fitted to 1024 characters after redaction). */
+  readonly diffSummary: (view: DiffSummaryView) => string
+  readonly diffDocument: {
+    readonly staged: string
+    readonly unstaged: string
+    readonly untracked: string
+    /** A patch longer than the read cap: whole lines kept. */
+    readonly cutWhileReading: (megabytes: number) => string
+    /** The document was cut to the size cap after redaction. */
+    readonly cutToFit: (megabytes: number) => string
+  }
+  /** The fixed text over the buttons: nothing from the repository. */
+  readonly gitActionsPrompt: string
+  readonly gitActionButtons: Readonly<
+    Record<'commit' | 'revert' | 'pr' | 'confirmRevert' | 'cancel', string>
+  >
+  readonly gitRevertConfirm: string
+  readonly gitRevertCancelled: string
+  readonly gitActionSent: (action: GitAction) => string
+  /** The fixed instruction a tap sends to the session, as owner text. */
+  readonly gitInstruction: (action: GitAction) => string
+  /** Short (a toast holds 200 characters). */
+  readonly gitTapFeedback: (outcome: GitTapOutcome) => string
+
+  // Bot: pinned status (F9)
+  readonly commandPinDescription: string
+  readonly commandUnpinDescription: string
+  readonly pinnedStatus: (view: PinnedStatusView) => string
+  readonly pinFailed: string
+  readonly pinNotPinned: string
+  readonly unpinDone: string
+  readonly unpinNothing: string
+
   // PreToolUse hook (F6): shown at the terminal, and to Claude
   readonly brakeStopReason: (view: BrakeHookView) => string
   readonly brakeToolDenied: string
@@ -347,6 +439,158 @@ function commandList(commands: readonly CommandHelp[]): string {
 
 function lines(...parts: readonly (string | undefined)[]): string {
   return parts.filter((part) => part !== undefined).join('\n')
+}
+
+/** Branch, project and path names come from the repository or the disk: shown sanitized. */
+function shown(text: string, max = 100): string {
+  return sanitizeDisplayText(text, max)
+}
+
+const DIFF_PATH_PROBLEM_ES: Readonly<Record<DiffPathProblem, string>> = {
+  empty: 'está vacía',
+  too_long: 'es demasiado larga',
+  control: 'tiene caracteres de control o invisibles',
+  absolute: 'es absoluta',
+  traversal: 'usa ..',
+  option: 'empieza con -',
+  magic: 'empieza con : (magia de pathspec)',
+}
+
+const DIFF_PATH_PROBLEM_EN: Readonly<Record<DiffPathProblem, string>> = {
+  empty: 'it is empty',
+  too_long: 'it is too long',
+  control: 'it has control or invisible characters',
+  absolute: 'it is absolute',
+  traversal: 'it uses ..',
+  option: 'it starts with -',
+  magic: 'it starts with : (pathspec magic)',
+}
+
+const GIT_ACTION_ES: Readonly<Record<GitAction, string>> = {
+  commit: 'Commit',
+  revert: 'Revertir',
+  pr: 'Abrir PR',
+}
+
+const GIT_ACTION_EN: Readonly<Record<GitAction, string>> = {
+  commit: 'Commit',
+  revert: 'Revert',
+  pr: 'Open PR',
+}
+
+/**
+ * The instructions a `/diff` button sends to the session (F8). Fixed text,
+ * nothing from the repository interpolated; it says the owner asked through
+ * a button, and the session still asks permission for every tool call.
+ */
+const GIT_INSTRUCTION_ES: Readonly<Record<GitAction, string>> = {
+  commit:
+    'El dueño pulsó "Commit" bajo /diff en Telegram. Revisa los cambios actuales y crea un commit con un mensaje claro. No hagas push.',
+  revert:
+    'El dueño pulsó "Revertir" bajo /diff en Telegram y lo confirmó. Descarta todos los cambios sin commit del árbol de trabajo (solo archivos con seguimiento; lista los archivos sin seguimiento en lugar de borrarlos).',
+  pr: 'El dueño pulsó "Abrir PR" bajo /diff en Telegram. Haz push de la rama actual y abre un pull request para ella; informa la URL.',
+}
+
+const GIT_INSTRUCTION_EN: Readonly<Record<GitAction, string>> = {
+  commit:
+    'The owner tapped "Commit" under /diff in Telegram. Review the current changes and create a commit with a clear message. Do not push.',
+  revert:
+    'The owner tapped "Revert" under /diff in Telegram and confirmed it. Discard all uncommitted changes in the working tree (tracked files only; list untracked files instead of deleting them).',
+  pr: 'The owner tapped "Open PR" under /diff in Telegram. Push the current branch and open a pull request for it; report the URL.',
+}
+
+const GIT_TAP_ES: Readonly<Record<GitTapOutcome, string>> = {
+  sent: 'Enviado a Claude.',
+  confirm: 'Pulsa "Confirmar revertir" para seguir.',
+  cancelled: 'Cancelado.',
+  expired: 'Esos botones ya vencieron. Envía /diff de nuevo.',
+  braked: 'El freno está activo: no se envió nada a Claude. Envía /resume primero.',
+}
+
+const GIT_TAP_EN: Readonly<Record<GitTapOutcome, string>> = {
+  sent: 'Sent to Claude.',
+  confirm: 'Tap "Confirm revert" to go ahead.',
+  cancelled: 'Cancelled.',
+  expired: 'Those buttons have expired. Send /diff again.',
+  braked: 'The brake is engaged: nothing was sent to Claude. Send /resume first.',
+}
+
+type RepoLine = Extract<GitStatusLineView, { kind: 'repo' }>
+
+function gitCountsEs(v: RepoLine): string {
+  return [
+    `${v.staged} preparados`,
+    `${v.unstaged} sin preparar`,
+    `${v.untracked} sin seguimiento`,
+    ...(v.conflicted > 0 ? [`${v.conflicted} en conflicto`] : []),
+  ].join(', ')
+}
+
+function gitCountsEn(v: RepoLine): string {
+  return [
+    `${v.staged} staged`,
+    `${v.unstaged} unstaged`,
+    `${v.untracked} untracked`,
+    ...(v.conflicted > 0 ? [`${v.conflicted} conflicted`] : []),
+  ].join(', ')
+}
+
+function branchEs(v: RepoLine): string {
+  const name = v.branch === undefined ? 'HEAD separado' : `rama ${shown(v.branch)}`
+  return v.ahead === undefined ? name : `${name}, ${v.ahead} por delante, ${v.behind} por detrás`
+}
+
+function branchEn(v: RepoLine): string {
+  const name = v.branch === undefined ? 'detached HEAD' : `branch ${shown(v.branch)}`
+  return v.ahead === undefined ? name : `${name}, ahead ${v.ahead}, behind ${v.behind}`
+}
+
+function pinnedStateEs(v: PinnedStatusView): string {
+  const since = v.since === undefined ? '' : ` desde las ${v.since}`
+  switch (v.state) {
+    case 'unknown':
+      return 'desconocido (aún no llegan eventos de los hooks)'
+    case 'idle':
+      return `en espera${since}`
+    case 'working':
+      return `trabajando${since}`
+    case 'waiting':
+      return `esperando tu respuesta${since}`
+    case 'braked':
+      return `frenado${since} (/resume lo retira)`
+    case 'ended':
+      return `sesión terminada${since}`
+  }
+}
+
+function pinnedStateEn(v: PinnedStatusView): string {
+  const since = v.since === undefined ? '' : ` since ${v.since}`
+  switch (v.state) {
+    case 'unknown':
+      return 'unknown (no hook events yet)'
+    case 'idle':
+      return `idle${since}`
+    case 'working':
+      return `working${since}`
+    case 'waiting':
+      return `waiting for your answer${since}`
+    case 'braked':
+      return `braked${since} (/resume releases it)`
+    case 'ended':
+      return `session ended${since}`
+  }
+}
+
+function gitLineEs(v: GitStatusLineView | undefined): string | undefined {
+  if (v === undefined) return undefined
+  if (v.kind === 'not_a_repo') return 'Git: el directorio del proyecto no es un repositorio git'
+  return `Git: ${branchEs(v)} · ${gitCountsEs(v)}`
+}
+
+function gitLineEn(v: GitStatusLineView | undefined): string | undefined {
+  if (v === undefined) return undefined
+  if (v.kind === 'not_a_repo') return 'Git: the project directory is not a git work tree'
+  return `Git: ${branchEn(v)} · ${gitCountsEn(v)}`
 }
 
 const INTERRUPT_ES: Readonly<Record<StopReportView['interrupt'], string | undefined>> = {
@@ -527,6 +771,7 @@ const es: Messages = {
         v.captureKinds,
       ),
       inboxLine((files, mb) => `Archivos recibidos guardados: ${files} (${mb} MB)`, v.inbox),
+      gitLineEs(v.git),
       'No es posible saber desde aquí si la sesión cargó este canal ni si Claude está ocupado.',
     ),
   commandStartDescription: 'comprueba que el puente está conectado',
@@ -688,6 +933,78 @@ const es: Messages = {
         : undefined,
     ),
 
+  commandDiffDescription:
+    'envía los cambios sin commit como archivo .diff (/diff <ruta> para una sola ruta)',
+  diffProblem: (v) => {
+    switch (v.problem) {
+      case 'not_a_repo':
+        return 'El directorio del proyecto no es un repositorio git (CLAUDE_PROJECT_DIR, o el directorio donde arrancó Claude Code).'
+      case 'git_missing':
+        return 'git no está instalado (o no está en el PATH) para el puente.'
+      case 'unsafe_config':
+        return 'La configuración del repositorio define un filtro que el puente no puede desactivar con seguridad; /diff no está disponible aquí.'
+      case 'busy':
+        return 'Ya hay un /diff en curso.'
+      case 'failed':
+        return 'git falló; el detalle está en el log del canal.'
+      case 'invalid_path':
+        return `Esa ruta no se acepta: ${DIFF_PATH_PROBLEM_ES[v.reason]}. Usa una ruta relativa dentro del proyecto, como src/app.ts.`
+      case 'no_changes':
+        return `✔️ No hay cambios${v.pathFilter === undefined ? '' : ` en ${shown(v.pathFilter)}`}${v.branch === undefined ? '' : ` (rama ${shown(v.branch)})`}.`
+    }
+  },
+  diffSummary: (v) =>
+    lines(
+      `📝 Cambios${v.project === undefined ? '' : ` en ${shown(v.project)}`} (${branchEs(v.status)})`,
+      v.pathFilter === undefined ? undefined : `Solo: ${shown(v.pathFilter)}`,
+      gitCountsEs(v.status),
+      `${v.files} archivos con cambios, +${v.insertions} −${v.deletions}${v.binary > 0 ? ` (${v.binary} binarios, sin contenido)` : ''}`,
+      'Los secretos reconocibles se censuran en el archivo; los que no tienen un formato conocido pueden pasar.',
+    ),
+  diffDocument: {
+    staged: '# Cambios preparados (git diff --cached)',
+    unstaged: '# Cambios sin preparar (git diff)',
+    untracked: '# Archivos sin seguimiento (no están en el diff)',
+    cutWhileReading: (mb) =>
+      `# … cortado: esta parte supera ${mb} MB; solo se muestran las líneas completas hasta ahí`,
+    cutToFit: (mb) => `# … cortado a ${mb} MB (después de censurar)`,
+  },
+  gitActionsPrompt:
+    'Pídele a Claude que actúe sobre estos cambios. Cada botón envía una instrucción fija a la sesión; Claude igual pide permiso antes de ejecutar nada.',
+  gitActionButtons: {
+    commit: '✅ Commit',
+    revert: '↩️ Revertir',
+    pr: '🔀 Abrir PR',
+    confirmRevert: '⚠️ Confirmar revertir',
+    cancel: 'Cancelar',
+  },
+  gitRevertConfirm:
+    '⚠️ Revertir descarta todos los cambios sin commit de los archivos con seguimiento. Los archivos sin seguimiento se conservan y se listan. ¿Confirmas?',
+  gitRevertCancelled: 'Revertir cancelado. Envía /diff de nuevo para tener botones.',
+  gitActionSent: (action) =>
+    `➡️ Enviado a Claude: ${GIT_ACTION_ES[action]}. Aprueba o deniega sus herramientas como siempre.`,
+  gitInstruction: (action) => GIT_INSTRUCTION_ES[action],
+  gitTapFeedback: (outcome) => GIT_TAP_ES[outcome],
+
+  commandPinDescription: 'fija un mensaje de estado que sigue a la sesión',
+  commandUnpinDescription: 'quita el mensaje de estado fijado',
+  pinnedStatus: (v) =>
+    lines(
+      `📌 Claude Code${v.project === undefined ? '' : ` · ${shown(v.project)}`}`,
+      `Estado: ${pinnedStateEs(v)}`,
+      v.activity === undefined
+        ? undefined
+        : `Última herramienta: ${v.activity.tool}${v.activity.detail === undefined ? '' : ` · ${v.activity.detail}`}`,
+      v.pendingPermissions + v.pendingChoices === 0
+        ? undefined
+        : `Esperándote: ${v.pendingPermissions} permisos, ${v.pendingChoices} preguntas`,
+      v.lastFinished === undefined ? undefined : `Última vez que terminó: ${v.lastFinished}`,
+    ),
+  pinFailed: 'No se pudo enviar el mensaje de estado.',
+  pinNotPinned: 'El mensaje de estado se envió, pero no se pudo fijar; igual se actualiza.',
+  unpinDone: 'Mensaje de estado desfijado; ya no se actualiza.',
+  unpinNothing: 'No hay mensaje de estado que quitar.',
+
   brakeStopReason: (v) =>
     v.source === undefined
       ? `telegram-bridge: el freno está activo, pero su archivo no se puede leer (${v.flagPath}). Claude se detuvo. Para retirarlo ejecuta "${CLI_INVOCATION} resume" o borra ese archivo.`
@@ -779,6 +1096,7 @@ const en: Messages = {
         v.captureKinds,
       ),
       inboxLine((files, mb) => `Received files kept: ${files} (${mb} MB)`, v.inbox),
+      gitLineEn(v.git),
       'From here it cannot be known whether the session loaded this channel or whether Claude is busy.',
     ),
   commandStartDescription: 'check that the bridge is connected',
@@ -936,6 +1254,78 @@ const en: Messages = {
         ? `Accepted: photos and ${v.allowed.join(', ')} files (text ones in UTF-8).`
         : undefined,
     ),
+
+  commandDiffDescription:
+    'sends the uncommitted changes as a .diff file (/diff <path> for one path)',
+  diffProblem: (v) => {
+    switch (v.problem) {
+      case 'not_a_repo':
+        return 'The project directory is not a git work tree (CLAUDE_PROJECT_DIR, or the directory Claude Code started in).'
+      case 'git_missing':
+        return 'git is not installed (or not on PATH) for the bridge.'
+      case 'unsafe_config':
+        return 'The repository configuration defines a filter the bridge cannot disable safely; /diff is not available here.'
+      case 'busy':
+        return 'A /diff is already running.'
+      case 'failed':
+        return 'git failed; the details are in the channel log.'
+      case 'invalid_path':
+        return `That path is not accepted: ${DIFF_PATH_PROBLEM_EN[v.reason]}. Use a relative path inside the project, such as src/app.ts.`
+      case 'no_changes':
+        return `✔️ No changes${v.pathFilter === undefined ? '' : ` in ${shown(v.pathFilter)}`}${v.branch === undefined ? '' : ` (branch ${shown(v.branch)})`}.`
+    }
+  },
+  diffSummary: (v) =>
+    lines(
+      `📝 Changes${v.project === undefined ? '' : ` in ${shown(v.project)}`} (${branchEn(v.status)})`,
+      v.pathFilter === undefined ? undefined : `Only: ${shown(v.pathFilter)}`,
+      gitCountsEn(v.status),
+      `${v.files} files changed, +${v.insertions} −${v.deletions}${v.binary > 0 ? ` (${v.binary} binary, no content)` : ''}`,
+      'Recognizable secrets are redacted in the file; ones without a known shape can get through.',
+    ),
+  diffDocument: {
+    staged: '# Staged changes (git diff --cached)',
+    unstaged: '# Unstaged changes (git diff)',
+    untracked: '# Untracked files (not in the diff)',
+    cutWhileReading: (mb) =>
+      `# … cut: this part is over ${mb} MB; only the whole lines up to there are shown`,
+    cutToFit: (mb) => `# … cut to ${mb} MB (after redaction)`,
+  },
+  gitActionsPrompt:
+    'Ask Claude to act on these changes. Each button sends a fixed instruction to the session; Claude still asks for permission before running anything.',
+  gitActionButtons: {
+    commit: '✅ Commit',
+    revert: '↩️ Revert',
+    pr: '🔀 Open PR',
+    confirmRevert: '⚠️ Confirm revert',
+    cancel: 'Cancel',
+  },
+  gitRevertConfirm:
+    '⚠️ Revert discards every uncommitted change to tracked files. Untracked files are kept and listed. Confirm?',
+  gitRevertCancelled: 'Revert cancelled. Send /diff again for new buttons.',
+  gitActionSent: (action) =>
+    `➡️ Sent to Claude: ${GIT_ACTION_EN[action]}. Approve or deny its tool calls as usual.`,
+  gitInstruction: (action) => GIT_INSTRUCTION_EN[action],
+  gitTapFeedback: (outcome) => GIT_TAP_EN[outcome],
+
+  commandPinDescription: 'pins a status message that follows the session',
+  commandUnpinDescription: 'removes the pinned status message',
+  pinnedStatus: (v) =>
+    lines(
+      `📌 Claude Code${v.project === undefined ? '' : ` · ${shown(v.project)}`}`,
+      `State: ${pinnedStateEn(v)}`,
+      v.activity === undefined
+        ? undefined
+        : `Last tool: ${v.activity.tool}${v.activity.detail === undefined ? '' : ` · ${v.activity.detail}`}`,
+      v.pendingPermissions + v.pendingChoices === 0
+        ? undefined
+        : `Waiting for you: ${v.pendingPermissions} permissions, ${v.pendingChoices} questions`,
+      v.lastFinished === undefined ? undefined : `Last finished: ${v.lastFinished}`,
+    ),
+  pinFailed: 'The status message could not be sent.',
+  pinNotPinned: 'The status message was sent but could not be pinned; it is still updated.',
+  unpinDone: 'Status message unpinned; it is no longer updated.',
+  unpinNothing: 'There is no status message to remove.',
 
   brakeStopReason: (v) =>
     v.source === undefined

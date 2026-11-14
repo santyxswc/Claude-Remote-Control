@@ -15,7 +15,9 @@ import type {
   CaptureOutcome,
   CaptureRequest,
 } from '../../../src/application/use-cases/CaptureScreenshot.ts'
+import type { PinOutcome } from '../../../src/application/use-cases/PinStatusMessage.ts'
 import type { ResumeSession } from '../../../src/application/use-cases/ResumeSession.ts'
+import type { DiffOutcome } from '../../../src/application/use-cases/ShowDiff.ts'
 import type { StopSession } from '../../../src/application/use-cases/StopSession.ts'
 import { allowSender } from '../../../src/domain/AllowedSender.ts'
 import type { CaptureKind } from '../../../src/domain/capture/CaptureTarget.ts'
@@ -308,6 +310,177 @@ describe('F5: /shot', () => {
       'shot',
     ])
     expect(registry.find('shot')?.description).toBe(en.commandShotDescription)
+  })
+})
+
+describe('F8 and F9 commands', () => {
+  function registry(withGit = true, withStatus = true) {
+    const diffRequests: unknown[] = []
+    const pins: string[] = []
+    const unpins: string[] = []
+    let finish: (outcome: DiffOutcome) => void = () => {}
+    const done = new Promise<DiffOutcome>((resolve) => {
+      finish = resolve
+    })
+    let pinOutcome: PinOutcome = 'pinned'
+    let unpinOutcome = true
+    const built = createCommandRegistry({
+      messages: en,
+      botUsername: 'b',
+      allowed: new InMemoryAllowedSenders(),
+      isSessionConnected: () => true,
+      pendingPermissions: () => 0,
+      brake: new InMemoryBrakeFlag(),
+      stopSession: {} as StopSession,
+      resumeSession: {} as ResumeSession,
+      ...(withGit
+        ? {
+            git: {
+              diff: {
+                start: (request) => {
+                  diffRequests.push(request)
+                  return request.path === '../x'
+                    ? { started: false, outcome: { status: 'invalid_path', problem: 'traversal' } }
+                    : { started: true, done }
+                },
+              },
+              statusLine: async () => ({
+                kind: 'repo' as const,
+                branch: 'main',
+                ahead: 2,
+                behind: 0,
+                staged: 1,
+                unstaged: 3,
+                untracked: 4,
+                conflicted: 0,
+              }),
+            },
+          }
+        : {}),
+      ...(withStatus
+        ? {
+            statusMessage: {
+              pin: {
+                execute: async (chatId: string) => {
+                  pins.push(chatId)
+                  return pinOutcome
+                },
+              },
+              unpin: {
+                execute: async (chatId: string) => {
+                  unpins.push(chatId)
+                  return unpinOutcome
+                },
+              },
+            },
+          }
+        : {}),
+    })
+    return {
+      registry: built,
+      diffRequests,
+      pins,
+      unpins,
+      finish: async (outcome: DiffOutcome) => {
+        finish(outcome)
+        await done
+        for (let i = 0; i < 5; i++) await Promise.resolve()
+      },
+      setPin: (outcome: PinOutcome) => {
+        pinOutcome = outcome
+      },
+      setUnpin: (outcome: boolean) => {
+        unpinOutcome = outcome
+      },
+    }
+  }
+
+  test('/diff, /pin and /unpin are listed only when wired, with their descriptions', () => {
+    expect(
+      registry()
+        .registry.list()
+        .map((c) => c.name),
+    ).toEqual(['start', 'help', 'status', 'stop', 'resume', 'diff', 'pin', 'unpin'])
+    expect(registry().registry.find('diff')?.description).toBe(en.commandDiffDescription)
+    expect(registry().registry.find('pin')?.description).toBe(en.commandPinDescription)
+    expect(registry(false, false).registry.find('diff')).toBeUndefined()
+    expect(registry(false, false).registry.find('pin')).toBeUndefined()
+  })
+
+  test('/help lists them', async () => {
+    const { ctx, replies } = context()
+    await registry().registry.find('help')?.execute(ctx)
+    expect(replies[0]).toContain(`/diff - ${en.commandDiffDescription}`)
+    expect(replies[0]).toContain(`/unpin - ${en.commandUnpinDescription}`)
+  })
+
+  test('/diff passes the path as the sender; a refusal is answered at once, a sent document needs no text', async () => {
+    const h = registry()
+    const refused = context('../x')
+    await h.registry.find('diff')?.execute(refused.ctx)
+    expect(refused.replies).toEqual([
+      en.diffProblem({ problem: 'invalid_path', reason: 'traversal' }),
+    ])
+
+    const ok = context('src')
+    await h.registry.find('diff')?.execute(ok.ctx)
+    expect(ok.replies).toEqual([])
+    await h.finish({ status: 'sent', files: 1, bytes: 10, cut: false, redactions: 0 })
+    expect(ok.replies).toEqual([])
+    expect(h.diffRequests).toEqual([
+      { chatId: ALICE.id, actor: `telegram:${ALICE.id}`, path: '../x' },
+      { chatId: ALICE.id, actor: `telegram:${ALICE.id}`, path: 'src' },
+    ])
+  })
+
+  test('/diff without changes answers later, in one line', async () => {
+    const h = registry()
+    const { ctx, replies } = context()
+    await h.registry.find('diff')?.execute(ctx)
+    await h.finish({ status: 'no_changes', branch: 'main', pathFilter: undefined })
+    expect(replies).toEqual(['✔️ No changes (branch main).'])
+  })
+
+  test('/pin is silent when pinned; /unpin says what it did', async () => {
+    const h = registry()
+    const pin = context()
+    await h.registry.find('pin')?.execute(pin.ctx)
+    h.setPin('not_pinned')
+    await h.registry.find('pin')?.execute(pin.ctx)
+    h.setPin('failed')
+    await h.registry.find('pin')?.execute(pin.ctx)
+    expect(pin.replies).toEqual([en.pinNotPinned, en.pinFailed])
+    expect(h.pins).toEqual([ALICE.id, ALICE.id, ALICE.id])
+
+    const unpin = context()
+    await h.registry.find('unpin')?.execute(unpin.ctx)
+    h.setUnpin(false)
+    await h.registry.find('unpin')?.execute(unpin.ctx)
+    expect(unpin.replies).toEqual([en.unpinDone, en.unpinNothing])
+  })
+
+  test('/status gains one git line; a failing read leaves it out', async () => {
+    const { ctx, replies } = context()
+    await registry().registry.find('status')?.execute(ctx)
+    expect(replies[0]).toContain(
+      '\nGit: branch main, ahead 2, behind 0 · 1 staged, 3 unstaged, 4 untracked',
+    )
+
+    const failing = new StatusCommand({
+      description: '',
+      render: en.status,
+      botUsername: undefined,
+      allowed: new InMemoryAllowedSenders(),
+      isSessionConnected: () => true,
+      pendingPermissions: () => 0,
+      brake: new InMemoryBrakeFlag(),
+      git: async () => {
+        throw new Error('git timed out')
+      },
+    })
+    const other = context()
+    await failing.execute(other.ctx)
+    expect(other.replies[0]).not.toContain('Git:')
   })
 })
 

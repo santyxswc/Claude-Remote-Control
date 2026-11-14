@@ -6,6 +6,16 @@ import type { CapturedFileInfo, CaptureScratch } from '../src/application/ports/
 import type { ChannelEvent, ChannelPort } from '../src/application/ports/ChannelPort.ts'
 import type { ChatGateway, SendOptions, SendReceipt } from '../src/application/ports/ChatGateway.ts'
 import type { Clock } from '../src/application/ports/Clock.ts'
+import type {
+  DocumentGateway,
+  DocumentReceipt,
+  OutboundDocument,
+} from '../src/application/ports/DocumentGateway.ts'
+import type {
+  GitReadRequest,
+  GitReadResult,
+  GitRepository,
+} from '../src/application/ports/GitRepository.ts'
 import type { ImageGateway, OutboundImage } from '../src/application/ports/ImageGateway.ts'
 import type { InboundPoller, PollingExit } from '../src/application/ports/InboundPoller.ts'
 import type { LogFields, Logger } from '../src/application/ports/Logger.ts'
@@ -35,6 +45,8 @@ import type {
   SessionController,
 } from '../src/application/ports/SessionController.ts'
 import type { Sleeper } from '../src/application/ports/Sleeper.ts'
+import type { StatusMessageGateway } from '../src/application/ports/StatusMessageGateway.ts'
+import type { StatusMessageStore } from '../src/application/ports/StatusMessageStore.ts'
 import type { Terminal } from '../src/application/ports/Terminal.ts'
 import type { AllowedSender } from '../src/domain/AllowedSender.ts'
 import type { BrakeRecord } from '../src/domain/brake/BrakeRecord.ts'
@@ -529,5 +541,99 @@ export class FakeCapturer implements ScreenCapturer {
     if (this.failWith !== undefined) throw this.failWith
     this.scratch.files.set(workspace.imagePath, this.image)
     return { path: workspace.imagePath, mime: 'image/png' }
+  }
+}
+
+/** A scripted work tree (F8): `result` is what every read returns; `requests` records them. */
+export class FakeGitRepository implements GitRepository {
+  readonly requests: GitReadRequest[] = []
+  result: GitReadResult | Error = { kind: 'not_a_repo' }
+  /** Resolve this to let a pending read finish (for the busy test). */
+  gate: Promise<void> | undefined
+
+  async read(request: GitReadRequest): Promise<GitReadResult> {
+    this.requests.push(request)
+    await this.gate
+    if (this.result instanceof Error) throw this.result
+    return this.result
+  }
+}
+
+/** Records documents "sent" as they reach it. */
+export class FakeDocumentGateway implements DocumentGateway {
+  readonly sent: { chatId: string; document: OutboundDocument; caption: string }[] = []
+  failWith: Error | undefined
+
+  async sendDocument(
+    chatId: string,
+    document: OutboundDocument,
+    caption: string,
+  ): Promise<DocumentReceipt> {
+    if (this.failWith !== undefined) throw this.failWith
+    this.sent.push({ chatId, document, caption })
+    return { redactions: 0, bytes: new TextEncoder().encode(document.text).length, cut: false }
+  }
+}
+
+/** The pinned status in memory; `next` errors are thrown by the next calls of that kind. */
+export class FakeStatusGateway implements StatusMessageGateway {
+  readonly calls: {
+    op: 'send' | 'edit' | 'pin' | 'unpin'
+    chatId: string
+    messageId: string
+    text?: string
+  }[] = []
+  readonly next: Partial<Record<'send' | 'edit' | 'pin' | 'unpin', Error[]>> = {}
+  #nextId = 700
+
+  async sendStatus(chatId: string, text: string): Promise<PromptRef> {
+    this.#fail('send')
+    const ref = { chatId, messageId: String(this.#nextId++) }
+    this.calls.push({ op: 'send', ...ref, text })
+    return ref
+  }
+
+  async editStatus(ref: PromptRef, text: string): Promise<void> {
+    this.#fail('edit')
+    this.calls.push({ op: 'edit', ...ref, text })
+  }
+
+  async pinStatus(ref: PromptRef): Promise<void> {
+    this.#fail('pin')
+    this.calls.push({ op: 'pin', ...ref })
+  }
+
+  async unpinStatus(ref: PromptRef): Promise<void> {
+    this.#fail('unpin')
+    this.calls.push({ op: 'unpin', ...ref })
+  }
+
+  ops(op: 'send' | 'edit' | 'pin' | 'unpin') {
+    return this.calls.filter((call) => call.op === op)
+  }
+
+  #fail(op: 'send' | 'edit' | 'pin' | 'unpin'): void {
+    const error = this.next[op]?.shift()
+    if (error !== undefined) throw error
+  }
+}
+
+export class InMemoryStatusMessageStore implements StatusMessageStore {
+  readonly #refs = new Map<string, PromptRef>()
+
+  put(ref: PromptRef): void {
+    this.#refs.set(ref.chatId, ref)
+  }
+
+  find(chatId: string): PromptRef | undefined {
+    return this.#refs.get(chatId)
+  }
+
+  list(): readonly PromptRef[] {
+    return [...this.#refs.values()]
+  }
+
+  remove(chatId: string): void {
+    this.#refs.delete(chatId)
   }
 }

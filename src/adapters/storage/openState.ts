@@ -11,6 +11,7 @@ import { SqliteChoiceStore } from './SqliteChoiceStore.ts'
 import { SqlitePairingStore } from './SqlitePairingStore.ts'
 import { SqlitePermissionStore } from './SqlitePermissionStore.ts'
 import { SqlitePollerLock } from './SqlitePollerLock.ts'
+import { SqliteStatusMessageStore } from './SqliteStatusMessageStore.ts'
 import { DATABASE_FILE, openDatabase } from './sqlite.ts'
 import { ensureStateDir } from './stateDir.ts'
 
@@ -24,6 +25,8 @@ export interface StateStores {
   readonly permissions: SqlitePermissionStore
   /** Questions asked with `ask_choice` (F7). */
   readonly choices: SqliteChoiceStore
+  /** The pinned status message of each chat (F9). */
+  readonly statusMessages: SqliteStatusMessageStore
   readonly tokens: DotEnvTokenStore
   readonly identities: JsonBotIdentityStore
   /** The panic brake (F6): a file, so the PreToolUse hook can read it without SQLite. */
@@ -44,6 +47,7 @@ export function openState(
     audit: new SqliteAuditLog(db),
     permissions: new SqlitePermissionStore(db),
     choices: new SqliteChoiceStore(db),
+    statusMessages: new SqliteStatusMessageStore(db),
     lock: new SqlitePollerLock(db, { pid: process.pid, clock, isProcessAlive }),
     tokens: new DotEnvTokenStore(stateDir, env),
     identities: new JsonBotIdentityStore(stateDir),

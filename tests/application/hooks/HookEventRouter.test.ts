@@ -110,3 +110,48 @@ test('the input fragment is JSON-escaped like the relayed preview', () => {
   const input = { file_path: 'C:\\repo\\a.ts', content: 'hello' }
   expect(JSON.stringify(input)).toContain(inputFragment(input) ?? 'missing')
 })
+
+test('the pinned status is fed by hook events only, with a safe tool summary (F9)', async () => {
+  const signals: { signal: unknown; cwd: string | undefined }[] = []
+  const clock = new FakeClock()
+  const policy = new NoticePolicy()
+  const logger = new MemoryLogger()
+  const router = new HookEventRouter({
+    notify: new NotifySessionEvent({
+      chat: new FakeChatGateway(),
+      allowed: new InMemoryAllowedSenders(),
+      policy,
+      lastPermissionRelayAt: () => undefined,
+      messages: messagesFor('en'),
+      audit: new InMemoryAuditLog(),
+      clock,
+      logger,
+    }),
+    activity: new TrackSessionActivity(clock),
+    policy,
+    markResolvedLocally: async () => true,
+    status: { record: (signal, cwd) => void signals.push({ signal, cwd }) },
+    clock,
+    logger,
+  })
+  await router.handle({ hook_event_name: 'UserPromptSubmit', cwd: '/repo', prompt: 'secret plan' })
+  await router.handle({
+    hook_event_name: 'PostToolUse',
+    cwd: '/repo',
+    tool_name: 'Bash',
+    tool_input: { command: 'cat ~/.ssh/id_rsa', description: 'Read the key' },
+  })
+  await router.handle({ hook_event_name: 'Notification', notification_type: 'permission_prompt' })
+  await router.handle({ hook_event_name: 'Stop', last_assistant_message: 'done' })
+  expect(signals).toEqual([
+    { signal: { kind: 'turn_started' }, cwd: '/repo' },
+    {
+      signal: { kind: 'tool_ran', activity: { tool: 'Bash', detail: 'Read the key' } },
+      cwd: '/repo',
+    },
+    { signal: { kind: 'attention' }, cwd: undefined },
+    { signal: { kind: 'turn_ended' }, cwd: undefined },
+  ])
+  expect(JSON.stringify(signals)).not.toContain('id_rsa')
+  expect(JSON.stringify(signals)).not.toContain('secret plan')
+})

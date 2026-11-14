@@ -100,6 +100,14 @@ const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX choices_by_state ON choices (state, created_at);
   `,
+  // F9: the pinned status message of each chat, so a restart keeps editing the same one.
+  `
+  CREATE TABLE status_messages (
+    chat_id TEXT PRIMARY KEY CHECK (chat_id GLOB '[1-9]*' AND chat_id NOT GLOB '*[^0-9]*'),
+    message_id TEXT NOT NULL CHECK (message_id GLOB '[1-9]*' AND message_id NOT GLOB '*[^0-9]*'),
+    created_at INTEGER NOT NULL
+  );
+  `,
 ]
 
 export const SCHEMA_VERSION = MIGRATIONS.length
