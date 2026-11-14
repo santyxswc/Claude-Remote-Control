@@ -203,13 +203,13 @@ Todo son variables de entorno opcionales.
 
 | Variable | Valor por defecto | Significado |
 | --- | --- | --- |
-| `TELEGRAM_BRIDGE_HOME` | `<CLAUDE_CONFIG_DIR o ~/.claude>/channels/telegram-bridge` | Directorio de estado (token, base de datos, banderas). Usa uno desechable en las primeras pruebas. |
-| `CLAUDE_CONFIG_DIR` | `~/.claude` | Base del directorio de estado por defecto. |
+| `TELEGRAM_BRIDGE_HOME` | `<CLAUDE_CONFIG_DIR o ~/.claude>/channels/telegram-bridge` | Directorio de estado (token, base de datos, banderas). Usa uno desechable en las primeras pruebas. Debe ser absoluta o empezar con `~/`. |
+| `CLAUDE_CONFIG_DIR` | `~/.claude` | Base del directorio de estado por defecto. Debe ser absoluta o empezar con `~/`, igual que `TELEGRAM_BRIDGE_HOME`: un valor relativo se rechaza (la CLI falla, el canal sirve MCP sin Telegram, el hook del freno usa el directorio por defecto); nunca se resuelve contra el directorio actual. |
 | `TELEGRAM_BOT_TOKEN` | sin definir | Reemplaza el token guardado por `init`. Se recomienda el archivo. |
 | `TELEGRAM_BRIDGE_LOCALE` | `es` | `en` para inglés. |
 | `TELEGRAM_BRIDGE_BROWSER` | autodetectado | Ruta absoluta del navegador para `/shot <url>`. Un valor inválido desactiva las capturas de páginas. |
 | `TELEGRAM_BRIDGE_DEBUG` | sin definir | `1` imprime diagnósticos en stderr desde los scripts de hooks. |
-| `TELEGRAM_BRIDGE_DEV_PORT` | sin definir | Solo desarrollo: abre un listener HTTP local sin autenticación (F0). Déjala sin definir. |
+| `TELEGRAM_BRIDGE_DEV_PORT` | sin definir | Solo desarrollo, sin bot: un listener HTTP local (F0) que exige el token bearer que imprime una vez en stderr, rechaza peticiones de navegador (`Origin`, `Host` ajeno) y no arranca si hay un token de bot configurado. Déjala sin definir. |
 
 Los hooks, la CLI y el canal deben resolver el mismo directorio de estado; define estas variables
 igual para todos (heredan el entorno de Claude Code).

@@ -181,7 +181,11 @@ sequenceDiagram
 ## State directory
 
 Resolved by `src/adapters/storage/stateDir.ts`: `TELEGRAM_BRIDGE_HOME`, else
-`<CLAUDE_CONFIG_DIR or ~/.claude>/channels/telegram-bridge`. Created with mode 0700; secret files
+`<CLAUDE_CONFIG_DIR or ~/.claude>/channels/telegram-bridge`. Both must be absolute or start with
+`~/` (`~` on Windows): the channel, the CLI and the hooks run in different working directories, so
+a relative value is refused (`InvalidStateDirError`) instead of resolved against one of them. The
+CLI fails with a message, the channel logs it and serves MCP without Telegram, and the brake hook
+ignores just that variable and checks the default directory (it must still find a brake). Created with mode 0700; secret files
 are 0600 on POSIX (not enforced on Windows, where the profile ACL protects them).
 
 | File | Purpose | Sensitivity |

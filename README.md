@@ -198,13 +198,13 @@ All settings are optional environment variables.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `TELEGRAM_BRIDGE_HOME` | `<CLAUDE_CONFIG_DIR or ~/.claude>/channels/telegram-bridge` | State directory (token, database, flags). Use a throwaway one for first tests. |
-| `CLAUDE_CONFIG_DIR` | `~/.claude` | Base of the default state directory. |
+| `TELEGRAM_BRIDGE_HOME` | `<CLAUDE_CONFIG_DIR or ~/.claude>/channels/telegram-bridge` | State directory (token, database, flags). Use a throwaway one for first tests. Must be absolute or start with `~/`: a relative value is refused (the CLI fails, the channel serves MCP without Telegram, the brake hook uses the default directory), never resolved against the working directory. |
+| `CLAUDE_CONFIG_DIR` | `~/.claude` | Base of the default state directory. Same rule: absolute or `~/`. |
 | `TELEGRAM_BOT_TOKEN` | unset | Overrides the token stored by `init`. The file is the recommended storage. |
 | `TELEGRAM_BRIDGE_LOCALE` | `es` | `en` for English. |
 | `TELEGRAM_BRIDGE_BROWSER` | auto-detected | Absolute path of the browser used for `/shot <url>`. An invalid value disables page captures. |
 | `TELEGRAM_BRIDGE_DEBUG` | unset | `1` prints diagnostics on stderr from the hook scripts. |
-| `TELEGRAM_BRIDGE_DEV_PORT` | unset | Development only: starts an unauthenticated local HTTP listener (F0). Leave it unset. |
+| `TELEGRAM_BRIDGE_DEV_PORT` | unset | Development only, without a bot: a local HTTP listener (F0) that needs the bearer token it prints once to stderr, refuses browser requests (`Origin`, foreign `Host`), and does not start when a bot token is configured. Leave it unset. |
 
 The hooks, the CLI and the channel must resolve the same state directory, so set these variables
 the same way for all of them (they inherit Claude Code's environment).

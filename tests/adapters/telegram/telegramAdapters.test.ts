@@ -114,6 +114,25 @@ describe('TelegramChatGateway', () => {
     expect(api.callsTo('sendMessage')).toHaveLength(3)
   })
 
+  test('M1: a send waiting out a flood wait holds up no other send (no global queue)', async () => {
+    const api = new FakeTelegramApi()
+    let wake = () => {}
+    const gateway = new TelegramChatGateway(TEST_TOKEN, {
+      fetch: api.fetch,
+      sleeper: { sleep: () => new Promise<void>((resolve) => (wake = resolve)) },
+    })
+    api.script('sendMessage', flood(60))
+    const waiting = gateway.sendText('1', 'stuck behind a flood wait')
+    await gateway.sendText('1', 'the /stop report')
+    expect(api.callsTo('sendMessage').map((c) => c.payload.text)).toEqual([
+      'stuck behind a flood wait',
+      'the /stop report',
+    ])
+    wake()
+    await waiting
+    expect(api.callsTo('sendMessage')).toHaveLength(3)
+  })
+
   test('retries are bounded', async () => {
     const { api, sleeper, gateway } = setup()
     api.script('sendMessage', flood(1), flood(1), flood(1), flood(1))
@@ -169,6 +188,24 @@ describe('toInboundMessage', () => {
       text: 'hi',
       sentAt: 0,
     })
+  })
+
+  test('sanitizes the name and the username at the boundary', () => {
+    const message = {
+      ...base,
+      chat: { id: 999, type: 'private', first_name: 'x' },
+      from: {
+        id: 999,
+        is_bot: false,
+        first_name: 'Santiago (@santi_real), id 12345678',
+        last_name: '\u{202e}999 di ,\u001b[2K\nline',
+        username: 'x\u{200b}y',
+      },
+    } as Message
+    const sender = toInboundMessage(message).sender
+    expect(sender?.id).toBe('999')
+    expect(sender?.username).toBeUndefined()
+    expect(sender?.displayName).toBe('Santiago (@santi_real), id 12345678 999 di , [2K line')
   })
 
   test('groups keep their (negative) chat id and kind; bots are not senders', () => {

@@ -18,8 +18,15 @@ export interface CapturedImage {
  */
 export interface ScreenCapturer {
   readonly kinds: readonly CaptureKind[]
-  /** Writes the image into the workspace. Rejects when nothing usable was produced. */
-  capture(target: CaptureTarget, workspace: CaptureWorkspace): Promise<CapturedImage>
+  /**
+   * Writes the image into the workspace. Rejects when nothing usable was
+   * produced, or when `signal` aborts (shutdown): the program is killed.
+   */
+  capture(
+    target: CaptureTarget,
+    workspace: CaptureWorkspace,
+    signal?: AbortSignal,
+  ): Promise<CapturedImage>
 }
 
 /** Why a kind cannot be captured here, and what would enable it. */

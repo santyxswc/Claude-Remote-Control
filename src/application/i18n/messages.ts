@@ -4,6 +4,7 @@
  * on stderr are not user-facing and stay in English.
  */
 import type { CaptureKind } from '../../domain/capture/CaptureTarget.ts'
+import { sanitizeDisplayText, sanitizeUsername } from '../../domain/displayText.ts'
 import type { PermissionOutcome } from '../permissions/PermissionOutcome.ts'
 import type { CaptureUnavailable } from '../ports/ScreenCapturer.ts'
 
@@ -110,9 +111,16 @@ export interface Messages {
   readonly onlyTextSupported: string
   readonly queued: string
   readonly deliveryFailed: string
+  readonly messageTooLong: (max: number) => string
 
   // Bot: permission relay
   readonly permissionPrompt: (view: PermissionPromptView) => string
+  /** Stands for the description and input of a prompt sent in full just before it (M2). */
+  readonly permissionDetailsAbove: string
+  /** The plain message(s) with the whole description and input, sent before the buttons. */
+  readonly permissionDetails: (view: PermissionPromptView) => string
+  /** Appended when part of a prompt could not be shown at all. */
+  readonly permissionHidden: (count: number) => string
   readonly permissionAwaitingConfirmation: (seconds: number) => string
   readonly permissionApproved: (decision: PermissionDecisionView) => string
   readonly permissionDenied: (decision: PermissionDecisionView) => string
@@ -138,6 +146,8 @@ export interface Messages {
   readonly commandShotDescription: string
   readonly shotCaption: (view: ShotCaptionView) => string
   readonly shotProblem: (view: ShotProblemView) => string
+  /** Sent at once; the image (or the problem) follows when the capture ends. */
+  readonly shotCapturing: string
 
   // PreToolUse hook (F6): shown at the terminal, and to Claude
   readonly brakeStopReason: (view: BrakeHookView) => string
@@ -154,6 +164,8 @@ export interface Messages {
   readonly unknownCommand: string
   readonly unexpectedError: (detail: string) => string
   readonly notConfigured: string
+  /** `TELEGRAM_BRIDGE_HOME` or `CLAUDE_CONFIG_DIR` is relative. */
+  readonly invalidStateDir: (variable: string) => string
 
   // CLI: init
   readonly initTokenPrompt: string
@@ -192,7 +204,14 @@ export interface Messages {
   readonly accessInvalidId: string
 }
 
-const USAGE_ES = `Uso: telegram-bridge <comando>
+/**
+ * How every hint tells the user to run the CLI: the package script, from the
+ * telegram-bridge folder. Nothing puts a `telegram-bridge` command on PATH,
+ * so hints never name one. The brake hook's fallback text repeats it.
+ */
+export const CLI_INVOCATION = 'bun run bridge --'
+
+const USAGE_ES = `Uso: ${CLI_INVOCATION} <comando>  (en la carpeta de telegram-bridge)
 
 Comandos:
   init [--token-stdin]   Configura el bot con el token de BotFather
@@ -205,7 +224,7 @@ Comandos:
 
 El token nunca se pasa como argumento: init lo pide sin mostrarlo o lo lee de stdin.`
 
-const USAGE_EN = `Usage: telegram-bridge <command>
+const USAGE_EN = `Usage: ${CLI_INVOCATION} <command>  (in the telegram-bridge folder)
 
 Commands:
   init [--token-stdin]   Configure the bot with the BotFather token
@@ -218,9 +237,34 @@ Commands:
 
 The token is never passed as an argument: init asks for it without echo or reads it from stdin.`
 
+/**
+ * A claimant or allowed sender on one line, id first. The name and the
+ * username are chosen by the account owner, so they are sanitized here too
+ * (rows stored before boundary sanitizing existed) and the name is quoted.
+ */
 function who(c: ClaimantView): string {
-  const handle = c.username === undefined ? '' : ` (@${c.username})`
-  return `${c.displayName}${handle}, id ${c.id}`
+  const username = sanitizeUsername(c.username)
+  const handle = username === undefined ? '' : ` (@${username})`
+  return `id ${sanitizeDisplayText(c.id)}, "${sanitizeDisplayText(c.displayName)}"${handle}`
+}
+
+interface ClaimantLabels {
+  readonly header: string
+  readonly id: string
+  readonly name: string
+  readonly username: string
+  readonly none: string
+}
+
+/** The pairing confirmation: the numeric id on its own line, before anything the claimant chose. */
+function claimant(c: ClaimantView, labels: ClaimantLabels): string {
+  const username = sanitizeUsername(c.username)
+  return [
+    labels.header,
+    `  ${labels.id}: ${sanitizeDisplayText(c.id)}`,
+    `  ${labels.name}: "${sanitizeDisplayText(c.displayName)}"`,
+    `  ${labels.username}: ${username === undefined ? labels.none : `@${username}`}`,
+  ].join('\n')
 }
 
 function notice(headline: string, view: SessionNoticeView): string {
@@ -364,6 +408,8 @@ const es: Messages = {
   onlyTextSupported: 'Por ahora solo se admite texto. Ese mensaje no se envió a Claude.',
   queued: 'Claude está ocupado: tu mensaje quedó en cola y lo verá al terminar.',
   deliveryFailed: 'No se pudo entregar el mensaje a la sesión de Claude Code.',
+  messageTooLong: (max) =>
+    `Mensaje demasiado largo: no se envió a la sesión. El límite es ${max} caracteres; divídelo en partes.`,
 
   permissionPrompt: (v) =>
     [
@@ -379,6 +425,17 @@ const es: Messages = {
         ? `Solicitud ${v.requestId}. Sin botones, responde "no ${v.requestId}" para denegar; aprobar solo con los botones.`
         : `Solicitud ${v.requestId}. Sin botones, responde "si ${v.requestId}" o "no ${v.requestId}".`,
     ].join('\n'),
+  permissionDetailsAbove: '(La descripción y la entrada completas están en el mensaje anterior.)',
+  permissionDetails: (v) =>
+    [
+      `🔐 Solicitud ${v.requestId} (${v.toolName}), completa:`,
+      '',
+      v.description,
+      '',
+      v.inputPreview,
+    ].join('\n'),
+  permissionHidden: (count) =>
+    `⚠️ ${count} caracteres sin mostrar: trátalo como riesgo alto y revisa la terminal si dudas.`,
   permissionAwaitingConfirmation: (seconds) =>
     `⚠️ Riesgo alto: pulsa "Confirmar aprobación" en los próximos ${seconds} s.`,
   permissionApproved: (d) => `✅ Aprobado por ${d.who} (${d.at})`,
@@ -424,6 +481,7 @@ const es: Messages = {
     '🛑 El freno está activo: este mensaje no se envió a Claude. Envía /resume primero.',
 
   commandShotDescription: 'captura la pantalla; /shot <url> captura una página web',
+  shotCapturing: '📸 Capturando…',
   shotCaption: (v) =>
     lines(
       v.kind === 'screen' ? '📸 Pantalla completa' : `📸 ${v.url}`,
@@ -449,11 +507,11 @@ const es: Messages = {
 
   brakeStopReason: (v) =>
     v.source === undefined
-      ? `telegram-bridge: el freno está activo, pero su archivo no se puede leer (${v.flagPath}). Claude se detuvo. Para retirarlo ejecuta "telegram-bridge resume" o borra ese archivo.`
+      ? `telegram-bridge: el freno está activo, pero su archivo no se puede leer (${v.flagPath}). Claude se detuvo. Para retirarlo ejecuta "${CLI_INVOCATION} resume" o borra ese archivo.`
       : lines(
           `telegram-bridge: freno activado${BRAKE_SOURCE_ES[v.source]}${v.since === undefined ? '' : ` (${v.since})`}. Claude se detuvo.`,
           v.reason === undefined ? undefined : `Motivo: ${v.reason}`,
-          'Para retirarlo envía /resume en Telegram o ejecuta "telegram-bridge resume".',
+          `Para retirarlo envía /resume en Telegram o ejecuta "${CLI_INVOCATION} resume".`,
         ),
   brakeToolDenied:
     'The telegram-bridge brake is engaged: the owner asked to stop. Do not retry; wait for the user.',
@@ -467,21 +525,21 @@ const es: Messages = {
   usage: USAGE_ES,
   unknownCommand: 'Comando o argumentos no válidos.',
   unexpectedError: (detail) => `Error inesperado: ${detail}`,
-  notConfigured: 'El bot no está configurado. Ejecuta primero: telegram-bridge init',
+  notConfigured: `El bot no está configurado. Ejecuta primero: ${CLI_INVOCATION} init`,
+  invalidStateDir: (variable) =>
+    `${variable} debe ser una ruta absoluta (o empezar con ~/). No se resuelve contra el directorio actual, porque el canal, este comando y los hooks corren en directorios distintos. Corrígela o quítala e inténtalo de nuevo.`,
 
   initTokenPrompt: 'Pega el token que te dio @BotFather (no se mostrará): ',
   initTokenEmpty: 'No se recibió ningún token.',
-  initNeedsTerminal:
-    'No hay una terminal interactiva. Usa: telegram-bridge init --token-stdin < archivo',
-  initStdinIsTerminal:
-    '--token-stdin espera el token por una tubería, por ejemplo: telegram-bridge init --token-stdin < archivo',
+  initNeedsTerminal: `No hay una terminal interactiva. Usa: ${CLI_INVOCATION} init --token-stdin < archivo`,
+  initStdinIsTerminal: `--token-stdin espera el token por una tubería, por ejemplo: ${CLI_INVOCATION} init --token-stdin < archivo`,
   initValidating: 'Validando el token con Telegram...',
   initInvalidToken: 'Telegram rechazó el token. Revísalo en @BotFather e inténtalo de nuevo.',
   initUnreachable: (detail) => `No se pudo contactar a Telegram (${detail}). Revisa tu conexión.`,
   initDone: (username) => `Listo: el bot @${username} quedó configurado.`,
   initEnvOverride:
     'Aviso: la variable TELEGRAM_BOT_TOKEN está definida y tiene prioridad sobre el token guardado.',
-  initNextStep: 'Siguiente paso: telegram-bridge pair',
+  initNextStep: `Siguiente paso: ${CLI_INVOCATION} pair`,
 
   pairScan: 'Escanea este código QR con tu teléfono, o abre el enlace:',
   pairLink: (link) => link,
@@ -491,17 +549,24 @@ const es: Messages = {
   pairPollingHere: 'Esperando el código en Telegram...',
   pairAnotherInProgress: (pid) =>
     `Ya hay otro emparejamiento en curso (proceso ${pid}). Termínalo o espera a que venza.`,
-  pairClaimedBy: (c) => `Código recibido de: ${who(c)}`,
+  pairClaimedBy: (c) =>
+    claimant(c, {
+      header: 'Código recibido de:',
+      id: 'Id de Telegram',
+      name: 'Nombre',
+      username: 'Usuario',
+      none: '(ninguno)',
+    }),
   pairConfirmPrompt: '¿Es tu cuenta? Solo esa cuenta podrá controlar este PC. [s/N] ',
   pairConfirmed: (c) => `Emparejado. ${who(c)} ya puede usar el bot.`,
   pairDeclined: 'Emparejamiento rechazado. Nadie obtuvo acceso.',
   pairExpired: 'El código venció sin confirmarse. Ejecuta pair de nuevo.',
   pairCancelled: 'El emparejamiento se canceló (demasiados intentos o fue reemplazado).',
-  pairTokenRejected: 'Telegram rechazó el token. Ejecuta telegram-bridge init de nuevo.',
+  pairTokenRejected: `Telegram rechazó el token. Ejecuta ${CLI_INVOCATION} init de nuevo.`,
   pairPollingConflict:
     'Otro programa está leyendo los mensajes de este bot. Ciérralo e inténtalo de nuevo.',
 
-  accessListEmpty: 'No hay cuentas permitidas. Usa telegram-bridge pair para agregar una.',
+  accessListEmpty: `No hay cuentas permitidas. Usa ${CLI_INVOCATION} pair para agregar una.`,
   accessListHeader: 'Cuentas permitidas:',
   accessListRow: (s, addedAt) => `  ${who(s)}, agregada el ${addedAt}`,
   accessRevoked: (id) => `Acceso retirado a ${id}.`,
@@ -541,6 +606,8 @@ const en: Messages = {
   onlyTextSupported: 'Only text is supported for now. That message was not sent to Claude.',
   queued: 'Claude is busy: your message is queued and Claude will see it when done.',
   deliveryFailed: 'The message could not be delivered to the Claude Code session.',
+  messageTooLong: (max) =>
+    `Message too long: it was not sent to the session. The limit is ${max} characters; split it into parts.`,
 
   permissionPrompt: (v) =>
     [
@@ -556,6 +623,17 @@ const en: Messages = {
         ? `Request ${v.requestId}. Without buttons, reply "no ${v.requestId}" to deny; approving needs the buttons.`
         : `Request ${v.requestId}. Without buttons, reply "yes ${v.requestId}" or "no ${v.requestId}".`,
     ].join('\n'),
+  permissionDetailsAbove: '(The full description and input are in the message above.)',
+  permissionDetails: (v) =>
+    [
+      `🔐 Request ${v.requestId} (${v.toolName}), in full:`,
+      '',
+      v.description,
+      '',
+      v.inputPreview,
+    ].join('\n'),
+  permissionHidden: (count) =>
+    `⚠️ ${count} characters not shown: treat this as high risk and check the terminal if in doubt.`,
   permissionAwaitingConfirmation: (seconds) =>
     `⚠️ High risk: tap "Confirm approve" within ${seconds} s.`,
   permissionApproved: (d) => `✅ Approved by ${d.who} (${d.at})`,
@@ -598,6 +676,7 @@ const en: Messages = {
     '🛑 The brake is engaged: this message was not sent to Claude. Send /resume first.',
 
   commandShotDescription: 'captures the screen; /shot <url> captures a web page',
+  shotCapturing: '📸 Capturing…',
   shotCaption: (v) =>
     lines(
       v.kind === 'screen' ? '📸 Full screen' : `📸 ${v.url}`,
@@ -623,11 +702,11 @@ const en: Messages = {
 
   brakeStopReason: (v) =>
     v.source === undefined
-      ? `telegram-bridge: the brake is engaged, but its file cannot be read (${v.flagPath}). Claude stopped. To release it run "telegram-bridge resume" or delete that file.`
+      ? `telegram-bridge: the brake is engaged, but its file cannot be read (${v.flagPath}). Claude stopped. To release it run "${CLI_INVOCATION} resume" or delete that file.`
       : lines(
           `telegram-bridge: brake engaged${BRAKE_SOURCE_EN[v.source]}${v.since === undefined ? '' : ` (${v.since})`}. Claude stopped.`,
           v.reason === undefined ? undefined : `Reason: ${v.reason}`,
-          'To release it send /resume in Telegram or run "telegram-bridge resume".',
+          `To release it send /resume in Telegram or run "${CLI_INVOCATION} resume".`,
         ),
   brakeToolDenied:
     'The telegram-bridge brake is engaged: the owner asked to stop. Do not retry; wait for the user.',
@@ -641,20 +720,21 @@ const en: Messages = {
   usage: USAGE_EN,
   unknownCommand: 'Invalid command or arguments.',
   unexpectedError: (detail) => `Unexpected error: ${detail}`,
-  notConfigured: 'The bot is not configured. Run first: telegram-bridge init',
+  notConfigured: `The bot is not configured. Run first: ${CLI_INVOCATION} init`,
+  invalidStateDir: (variable) =>
+    `${variable} must be an absolute path (or start with ~/). It is not resolved against the current directory, because the channel, this command and the hooks run in different directories. Fix or unset it and try again.`,
 
   initTokenPrompt: 'Paste the token from @BotFather (it will not be shown): ',
   initTokenEmpty: 'No token was received.',
-  initNeedsTerminal: 'No interactive terminal. Use: telegram-bridge init --token-stdin < file',
-  initStdinIsTerminal:
-    '--token-stdin expects the token on a pipe, for example: telegram-bridge init --token-stdin < file',
+  initNeedsTerminal: `No interactive terminal. Use: ${CLI_INVOCATION} init --token-stdin < file`,
+  initStdinIsTerminal: `--token-stdin expects the token on a pipe, for example: ${CLI_INVOCATION} init --token-stdin < file`,
   initValidating: 'Validating the token with Telegram...',
   initInvalidToken: 'Telegram rejected the token. Check it in @BotFather and try again.',
   initUnreachable: (detail) => `Could not reach Telegram (${detail}). Check your connection.`,
   initDone: (username) => `Done: the bot @${username} is configured.`,
   initEnvOverride:
     'Note: the TELEGRAM_BOT_TOKEN variable is set and takes precedence over the saved token.',
-  initNextStep: 'Next step: telegram-bridge pair',
+  initNextStep: `Next step: ${CLI_INVOCATION} pair`,
 
   pairScan: 'Scan this QR code with your phone, or open the link:',
   pairLink: (link) => link,
@@ -664,16 +744,23 @@ const en: Messages = {
   pairPollingHere: 'Waiting for the code on Telegram...',
   pairAnotherInProgress: (pid) =>
     `Another pairing is already running (process ${pid}). Finish it or wait for it to expire.`,
-  pairClaimedBy: (c) => `Code received from: ${who(c)}`,
+  pairClaimedBy: (c) =>
+    claimant(c, {
+      header: 'Code received from:',
+      id: 'Telegram id',
+      name: 'Name',
+      username: 'Username',
+      none: '(none)',
+    }),
   pairConfirmPrompt: 'Is this your account? Only it will be able to control this PC. [y/N] ',
   pairConfirmed: (c) => `Paired. ${who(c)} can now use the bot.`,
   pairDeclined: 'Pairing declined. Nobody was given access.',
   pairExpired: 'The code expired without confirmation. Run pair again.',
   pairCancelled: 'The pairing was cancelled (too many attempts, or it was replaced).',
-  pairTokenRejected: 'Telegram rejected the token. Run telegram-bridge init again.',
+  pairTokenRejected: `Telegram rejected the token. Run ${CLI_INVOCATION} init again.`,
   pairPollingConflict: "Another program is reading this bot's messages. Close it and try again.",
 
-  accessListEmpty: 'No accounts are allowed. Use telegram-bridge pair to add one.',
+  accessListEmpty: `No accounts are allowed. Use ${CLI_INVOCATION} pair to add one.`,
   accessListHeader: 'Allowed accounts:',
   accessListRow: (s, addedAt) => `  ${who(s)}, added on ${addedAt}`,
   accessRevoked: (id) => `Access removed for ${id}.`,

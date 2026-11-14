@@ -37,8 +37,16 @@ export const SCREENSHOT_TOOL_NAME = 'send_screenshot'
 /** "Five lowercase letters drawn from a-z without l". */
 const REQUEST_ID = /^[a-km-z]{5}$/
 
-/** Claude Code caps each field at 3,500 code points; anything far beyond is not from it. */
-const MAX_PERMISSION_FIELD_LENGTH = 65_536
+/**
+ * Claude Code caps each field at 3,500 code points (ADR 0005). zod counts
+ * UTF-16 units and sees the already JSON-decoded string, so the worst case is
+ * 7,000 units (every code point astral); 8,192 leaves room for the elision
+ * marker. Anything longer is not from Claude Code and is ignored (L2).
+ */
+export const MAX_PERMISSION_FIELD_LENGTH = 8_192
+
+/** Longest `reply` text accepted: about 16 Telegram messages; longer is an error result (L2). */
+export const MAX_REPLY_TEXT_LENGTH = 65_536
 
 /** Dispatch key only; the params are validated by hand so a bad request is logged, not thrown. */
 const PermissionRequestNotification = z.object({
@@ -88,7 +96,13 @@ export class InvalidChannelMetaError extends Error {
 
 const ReplyArgs = z.object({
   chat_id: z.string().min(1),
-  text: z.string().min(1),
+  text: z
+    .string()
+    .min(1)
+    .max(
+      MAX_REPLY_TEXT_LENGTH,
+      `text is longer than ${MAX_REPLY_TEXT_LENGTH} characters; send it in smaller replies`,
+    ),
   reply_to: z
     .union([z.string().min(1), z.number().int().positive()])
     .transform(String)
@@ -106,7 +120,11 @@ const REPLY_TOOL: Tool = {
         type: 'string',
         description: 'The chat_id attribute of the inbound <channel> tag',
       },
-      text: { type: 'string', description: 'The message to send, as plain text' },
+      text: {
+        type: 'string',
+        description: 'The message to send, as plain text',
+        maxLength: MAX_REPLY_TEXT_LENGTH,
+      },
       reply_to: {
         type: 'string',
         description: 'Optional: the message_id attribute of the message to answer in a thread',

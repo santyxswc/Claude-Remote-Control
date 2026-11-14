@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { messagesFor } from '../../../src/application/i18n/messages.ts'
 import { NotifySessionEvent } from '../../../src/application/use-cases/NotifySessionEvent.ts'
 import { allowSender } from '../../../src/domain/AllowedSender.ts'
-import { NOTICE_BODY_MAX_LENGTH, NoticePolicy } from '../../../src/domain/notices/NoticePolicy.ts'
+import { NoticePolicy } from '../../../src/domain/notices/NoticePolicy.ts'
 import {
   ALICE,
   BOB,
@@ -77,14 +77,12 @@ test('the audit row has the event and the length, never the text', async () => {
   expect(h.logger.text).not.toContain('secret plan')
 })
 
-test('a long last message is elided so the notice fits one message', async () => {
+test('M3: a long last message goes out whole; the redacting gateway fits it to one message', async () => {
   const h = harness()
-  await h.notify.execute(stop(`START ${'x'.repeat(20_000)} END`))
-  const text = h.chat.sent[0]?.text ?? ''
-  expect(text.length).toBeLessThan(NOTICE_BODY_MAX_LENGTH + 100)
-  expect(text).toContain('START')
-  expect(text).toContain('END')
-  expect(text).toContain('…')
+  const long = `START ${'x'.repeat(20_000)} END`
+  await h.notify.execute(stop(long))
+  expect(h.chat.sent[0]?.text).toContain(long)
+  expect(h.chat.sent[0]?.options).toEqual({ fitToOneMessage: true })
 })
 
 test('no last message: just the headline', async () => {

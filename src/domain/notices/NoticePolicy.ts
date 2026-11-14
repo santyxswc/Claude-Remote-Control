@@ -13,9 +13,6 @@ export const OWNER_QUIET_MS = 3_000
  */
 export const PERMISSION_NOTICE_COVER_MS = 15_000
 
-/** Body length of a notice, so header + body fit one Telegram message even after redaction. */
-export const NOTICE_BODY_MAX_LENGTH = 3_500
-
 /**
  * `finished`: the turn ended (`Stop`). `attention`: Claude waits for the
  * owner (`Notification`); `idle` marks the 60-second idle reminder.

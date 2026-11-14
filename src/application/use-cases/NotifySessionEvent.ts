@@ -1,9 +1,7 @@
-import { elideMiddle } from '../../domain/elideMiddle.ts'
-import {
-  NOTICE_BODY_MAX_LENGTH,
-  type NoticeCandidate,
-  type NoticePolicy,
-  type Suppression,
+import type {
+  NoticeCandidate,
+  NoticePolicy,
+  Suppression,
 } from '../../domain/notices/NoticePolicy.ts'
 import { attentionTrigger, projectName } from '../../domain/notices/sessionNotices.ts'
 import type { Messages } from '../i18n/messages.ts'
@@ -50,8 +48,9 @@ export interface NotifySessionEventDeps {
 
 /**
  * Tells every allowlisted sender that Claude finished (`Stop`) or waits for
- * them (`Notification`), subject to the debounce policy. The notice is fitted
- * to one message before the outbound pipeline redacts it. Audit rows carry
+ * them (`Notification`), subject to the debounce policy. The whole text goes
+ * to the outbound pipeline, which redacts it and only then fits it to one
+ * message (M3). Audit rows carry
  * the event and the length, never the text.
  */
 export class NotifySessionEvent {
@@ -90,7 +89,7 @@ export class NotifySessionEvent {
     let delivered = 0
     for (const chatId of recipients) {
       try {
-        await this.deps.chat.sendText(chatId, candidate.text)
+        await this.deps.chat.sendText(chatId, candidate.text, { fitToOneMessage: true })
         delivered += 1
       } catch (error) {
         logger.warn('could not deliver a notice', { chatId, error })
@@ -114,5 +113,5 @@ export class NotifySessionEvent {
 }
 
 function fit(text: string | undefined): string | undefined {
-  return text === undefined ? undefined : elideMiddle(text.trim(), NOTICE_BODY_MAX_LENGTH)
+  return text?.trim()
 }

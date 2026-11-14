@@ -1,15 +1,19 @@
 /** EngageBrake, ResumeSession and StopSession over in-memory fakes. */
 import { describe, expect, test } from 'bun:test'
+import type { PromptGateway } from '../../../src/application/ports/PromptGateway.ts'
 import { EngageBrake } from '../../../src/application/use-cases/EngageBrake.ts'
 import { ResumeSession } from '../../../src/application/use-cases/ResumeSession.ts'
 import { StopSession } from '../../../src/application/use-cases/StopSession.ts'
 import { allowSender } from '../../../src/domain/AllowedSender.ts'
 import { PermissionRequest } from '../../../src/domain/permissions/PermissionRequest.ts'
-import { ALICE, BOB, FakeSessionController } from '../../fakes.ts'
+import { ALICE, BOB, FakePromptGateway, FakeSessionController } from '../../fakes.ts'
 import { en, incoming, permissionHarness } from '../permissionHarness.ts'
 
-function harness(controller = new FakeSessionController('sent')) {
-  const h = permissionHarness()
+function harness(
+  controller = new FakeSessionController('sent'),
+  prompts: PromptGateway | undefined = undefined,
+) {
+  const h = permissionHarness(prompts === undefined ? {} : { prompts })
   const common = { brake: h.brake, audit: h.audit, clock: h.clock, logger: h.logger }
   const engage = new EngageBrake(common)
   return {
@@ -77,6 +81,30 @@ describe('ResumeSession', () => {
 })
 
 describe('StopSession', () => {
+  test('M1: a slow prompt edit (flood wait) holds up neither the interrupt nor other verdicts', async () => {
+    let release = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const prompts = new FakePromptGateway()
+    prompts.editPrompt = () => gate
+    const controller = new FakeSessionController('sent')
+    const h = harness(controller, prompts)
+    await h.relay.execute(incoming({ requestId: 'abcde' }))
+    await h.relay.execute(incoming({ requestId: 'fghij' }))
+
+    const stopping = h.stop.execute({ sender: ALICE })
+    expect(h.brake.status().engaged).toBe(true) // before anything is awaited
+    for (let i = 0; i < 50 && (controller.calls < 1 || h.verdicts.sent.length < 2); i++) {
+      await Promise.resolve()
+    }
+    expect(controller.calls).toBe(1)
+    expect(h.verdicts.sent.map((v) => v.requestId)).toEqual(['abcde', 'fghij'])
+
+    release()
+    expect((await stopping).denied).toBe(2)
+  })
+
   test('brake, one deny per pending request of this session, interrupt, audit', async () => {
     const h = harness()
     h.allowed.add(allowSender(BOB, h.clock.now()))

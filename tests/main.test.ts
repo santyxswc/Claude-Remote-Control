@@ -18,6 +18,8 @@ let stderr = ''
 const transportErrors: Error[] = []
 const notifications: unknown[] = []
 let baseUrl: string
+let devToken: string
+const authorized = () => ({ Authorization: `Bearer ${devToken}` })
 let stateDir: string
 let projectDir: string
 const PROJECT_SECRET = 'Zq8!vR2#pL-0042-main'
@@ -64,6 +66,11 @@ beforeAll(async () => {
     () => /dev inbound listening \{"url":"(http:\/\/127\.0\.0\.1:\d+)"\}/.exec(stderr)?.[1],
     'the dev listener',
   )
+  // Printed once on stderr for the developer to paste; never logged as a field.
+  devToken = await waitFor(
+    () => /Authorization: Bearer ([A-Za-z0-9_-]{43})/.exec(stderr)?.[1],
+    'the dev token',
+  )
 }, 20_000)
 
 afterAll(async () => {
@@ -75,12 +82,20 @@ afterAll(async () => {
 test('a POST reaches the session and the reply comes back on /events', async () => {
   expect(client.getServerVersion()?.name).toBe('telegram-bridge')
 
-  const events = await fetch(`${baseUrl}/events`)
+  // M4: the token is required, and only on loopback without an Origin.
+  expect((await fetch(`${baseUrl}/`, { method: 'POST', body: 'no token' })).status).toBe(401)
+  expect(notifications).toEqual([])
+
+  const events = await fetch(`${baseUrl}/events`, { headers: authorized() })
   const reader = events.body?.getReader()
   if (reader === undefined) throw new Error('no SSE body')
   await reader.read() // ": connected"
 
-  const posted = await fetch(`${baseUrl}/`, { method: 'POST', body: 'what time is it?' })
+  const posted = await fetch(`${baseUrl}/`, {
+    method: 'POST',
+    body: 'what time is it?',
+    headers: authorized(),
+  })
   expect(posted.status).toBe(200)
 
   const notification = await waitFor(() => notifications[0], 'the channel notification')
@@ -155,3 +170,55 @@ test('the process exits when the client closes stdin', async () => {
     }
   }, 'the server process to exit')
 })
+
+test('L3: a relative TELEGRAM_BRIDGE_HOME keeps serving MCP without telegram and creates nothing in cwd', async () => {
+  const cwd = makeTempDir()
+  let err = ''
+  const bad = new StdioClientTransport({
+    command: process.execPath,
+    args: [join(repoRoot, 'src', 'main.ts')],
+    cwd,
+    env: { TELEGRAM_BRIDGE_HOME: 'relative-state', TELEGRAM_BOT_TOKEN: '' },
+    stderr: 'pipe',
+  })
+  bad.stderr?.on('data', (chunk: Buffer) => {
+    err += chunk.toString('utf8')
+  })
+  const badClient = new Client({ name: 'fake-claude-code', version: '0.0.0' })
+  try {
+    await badClient.connect(bad)
+    expect((await badClient.listTools()).tools.map((t) => t.name)).toEqual(['reply'])
+    for (let i = 0; i < 500 && !err.includes('state directory'); i++) await Bun.sleep(10)
+    expect(err).toContain('TELEGRAM_BRIDGE_HOME')
+    expect(existsSync(join(cwd, 'relative-state'))).toBe(false)
+  } finally {
+    await badClient.close()
+    removeTempDir(cwd)
+  }
+}, 20_000)
+
+test('a malformed TELEGRAM_BRIDGE_DEV_PORT is logged and the channel keeps serving MCP', async () => {
+  const dir = makeTempDir()
+  let err = ''
+  const typo = new StdioClientTransport({
+    command: process.execPath,
+    args: [join(repoRoot, 'src', 'main.ts')],
+    cwd: repoRoot,
+    env: { TELEGRAM_BRIDGE_DEV_PORT: '87 88', TELEGRAM_BRIDGE_HOME: dir, TELEGRAM_BOT_TOKEN: '' },
+    stderr: 'pipe',
+  })
+  typo.stderr?.on('data', (chunk: Buffer) => {
+    err += chunk.toString('utf8')
+  })
+  const typoClient = new Client({ name: 'fake-claude-code', version: '0.0.0' })
+  try {
+    await typoClient.connect(typo)
+    expect((await typoClient.listTools()).tools.map((t) => t.name)).toEqual(['reply'])
+    for (let i = 0; i < 500 && !err.includes('invalid dev port'); i++) await Bun.sleep(10)
+    expect(err).toContain('invalid dev port; the dev listener is off')
+    expect(err).not.toContain('dev inbound listening')
+  } finally {
+    await typoClient.close()
+    removeTempDir(dir)
+  }
+}, 20_000)

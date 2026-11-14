@@ -14,12 +14,13 @@ import {
   type DevHttpInbound,
   startDevHttpInbound,
 } from './adapters/dev/DevHttpInbound.ts'
-import { DEV_PORT_ENV, parseDevPort } from './adapters/dev/devPort.ts'
+import { DEV_PORT_ENV, devListenerPort } from './adapters/dev/devPort.ts'
 import { RedactingLogger } from './adapters/logging/RedactingLogger.ts'
 import { StderrLogger } from './adapters/logging/StderrLogger.ts'
 import { McpChannelServer } from './adapters/mcp/McpChannelServer.ts'
 import { createSessionController } from './adapters/session/createSessionController.ts'
 import { spawnProcess } from './adapters/session/processRunner.ts'
+import { TOKEN_ENV } from './adapters/storage/DotEnvTokenStore.ts'
 import { openState, type StateStores } from './adapters/storage/openState.ts'
 import { defaultStateDir } from './adapters/storage/stateDir.ts'
 import { DotEnvProjectSecrets } from './adapters/system/DotEnvProjectSecrets.ts'
@@ -45,18 +46,26 @@ process.on('uncaughtException', (error) => logger.error('uncaught exception', { 
 const env = process.env
 const clock = new SystemClock()
 const messages = messagesFor(parseLocale(env[LOCALE_ENV]))
-const devPort = parseDevPort(env[DEV_PORT_ENV])
-const devReplies = devPort === undefined ? undefined : new DevChatGateway()
-const stateDir = defaultStateDir()
 
 // A broken state directory must not crash the server: Claude Code would mark it failed.
+// A relative TELEGRAM_BRIDGE_HOME or CLAUDE_CONFIG_DIR is refused, never resolved against cwd.
+let stateDir: string | undefined
 let state: StateStores | undefined
 try {
+  stateDir = defaultStateDir()
   state = openState(stateDir, env, clock)
 } catch (error) {
-  logger.error('could not open the state directory; serving MCP without telegram', { error })
+  logger.error('could not use the state directory; serving MCP without telegram', { error })
 }
 const token = state?.tokens.load()
+
+// Only for trying the channel without a bot; a typo is logged, never fatal (M4, ADR 0005).
+const devPort = devListenerPort({
+  raw: env[DEV_PORT_ENV],
+  botConfigured: token !== undefined || (env[TOKEN_ENV] ?? '').trim() !== '',
+  logger,
+})
+const devReplies = devPort === undefined ? undefined : new DevChatGateway()
 
 // Claude Code may start us in the plugin directory; CLAUDE_PROJECT_DIR names the project.
 const projectDir = env[PROJECT_DIR_ENV]
@@ -80,7 +89,7 @@ const sendReply = buildSendReply({
 
 // F5: only where images can reach an allowlisted chat (a token and the state directory).
 const screenshots =
-  state === undefined || token === undefined
+  state === undefined || token === undefined || stateDir === undefined
     ? undefined
     : buildScreenshots({
         stateDir,
@@ -123,6 +132,8 @@ async function shutdown(reason: string): Promise<void> {
   logger.info('shutting down', { reason })
   // Never hang on exit: a stuck close must not leave an orphan process behind.
   setTimeout(() => process.exit(0), 2000).unref()
+  // A capture in flight is cancelled (its program killed, its files removed), never orphaned.
+  await screenshots?.stop()
   await polling?.stop()
   state?.db.close()
   await devInbound?.stop()
@@ -131,9 +142,9 @@ async function shutdown(reason: string): Promise<void> {
 }
 
 /** Without the hook listener there are no notices; everything else keeps working. */
-function hookListenerOrNothing(): HookEventSource | undefined {
+function hookListenerOrNothing(dir: string): HookEventSource | undefined {
   try {
-    return createHookIpcServer(stateDir, logger)
+    return createHookIpcServer(dir, logger)
   } catch (error) {
     logger.error('the hook listener cannot be set up; notices are off', { error })
     return undefined
@@ -152,7 +163,7 @@ logger.info('channel connected', { stateDir })
 
 if (state !== undefined && token === undefined) {
   logger.warn('telegram is not configured; run `bun run bridge -- init`, then `pair`')
-} else if (state !== undefined && token !== undefined) {
+} else if (state !== undefined && token !== undefined && stateDir !== undefined) {
   try {
     polling = startTelegramInbound({
       state,
@@ -163,8 +174,8 @@ if (state !== undefined && token === undefined) {
       clock,
       logger,
       tracking,
-      hooks: hookListenerOrNothing(),
-      // tmux on Linux when Claude Code runs in a pane; otherwise /stop relies on the hook brake.
+      hooks: hookListenerOrNothing(stateDir),
+      // tmux (any non-Windows OS) when Claude Code runs in a pane; otherwise /stop relies on the hook brake.
       sessionController: createSessionController({
         platform: process.platform,
         env,

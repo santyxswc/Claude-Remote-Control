@@ -15,10 +15,10 @@ message is only read after the work it should have stopped. The plan's interrupt
 
 ## Decision
 
-- **Flag.** `/stop` (or `telegram-bridge stop` at the terminal) writes `<stateDir>/brake.json`:
+- **Flag.** `/stop` (or `bun run bridge -- stop` at the terminal) writes `<stateDir>/brake.json`:
   `{"v":1,"engagedAt":<ms>,"actor":"telegram:<id>"|"terminal","reason"?:"..."}`, mode 0600,
   atomically (temp file + rename). A file, not a SQLite row, so the hook reads it with one
-  `open` and node builtins only. `/resume` or `telegram-bridge resume` deletes it.
+  `open` and node builtins only. `/resume` or `bun run bridge -- resume` deletes it.
 - **Hook.** `hooks/hooks.json` registers `bun ${CLAUDE_PLUGIN_ROOT}/src/brakeHook.ts` on
   `PreToolUse` without a matcher (every tool, the bridge's own `reply` included: Claude is
   stopped), synchronous (`async` would make its decision void, per the docs), `timeout: 5`.
@@ -38,12 +38,12 @@ message is only read after the work it should have stopped. The plan's interrupt
   buttons and say "denied by /stop"), then asks the `SessionController` to interrupt the turn.
   While the flag is set: chat messages are not forwarded (`BrakeGateStep`, one notice per minute),
   new permission requests are answered `deny` at once and not relayed, approvals of prompts left
-  open (after `telegram-bridge stop`) are refused, and `/status` shows the brake.
+  open (after `bun run bridge -- stop`) are refused, and `/status` shows the brake.
 - **Interrupt.** `TmuxSessionController` runs `tmux send-keys -t <pane> Escape` (argument array,
-  pane validated as `%<digits>`, 2 s timeout) only on Linux when the channel inherited `TMUX` and
-  `TMUX_PANE` from Claude Code's pane. Everywhere else `NoopSessionController` reports
-  `unavailable`, and the chat says "Claude will stop at its next tool call". No keystroke
-  injection on Windows or macOS.
+  pane validated as `%<digits>`, 2 s timeout) on any non-Windows platform (Linux, macOS, ...) when
+  the channel inherited `TMUX` and `TMUX_PANE` from Claude Code's pane. Everywhere else
+  `NoopSessionController` reports `unavailable`, and the chat says "Claude will stop at its next
+  tool call". No keystroke injection on Windows, nor outside tmux.
 
 ## Failure policy
 
@@ -51,7 +51,7 @@ message is only read after the work it should have stopped. The plan's interrupt
   cannot be resolved. A broken or partial install must not brick every session.
 - **Flag file present but unreadable, oversized or not a valid record: braked (fail closed).**
   Someone asked to stop. The `stopReason` then names the file and says to run
-  `telegram-bridge resume` or delete it. Any error opening the file other than "does not exist"
+  `bun run bridge -- resume` or delete it. Any error opening the file other than "does not exist"
   counts as present. If the catalog cannot be loaded the hook still prints a fixed English
   deny-and-stop object.
 - **`onFailure: "continue"`.** It applies when the hook process itself fails: `bun` missing from
@@ -66,7 +66,7 @@ message is only read after the work it should have stopped. The plan's interrupt
 ## Consequences
 
 - The brake works on every OS and without a terminal multiplexer.
-- Text generation already in progress is not cut, except inside tmux on Linux; the next tool call
+- Text generation already in progress is not cut, except inside tmux (not on Windows); the next tool call
   is. After `/resume` Claude does not continue by itself: the next prompt (terminal or chat)
   starts a new turn.
 - The hook runs on every tool call, so it must stay fast and must not depend on the channel

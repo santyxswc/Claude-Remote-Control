@@ -1,6 +1,11 @@
 export interface SendOptions {
   /** Thread the message under this message of the same chat, if it still exists. */
   readonly replyTo?: string
+  /**
+   * Send one message, never several: the redacting decorator elides the
+   * middle, after redaction (M3), so callers pass the whole text.
+   */
+  readonly fitToOneMessage?: boolean
 }
 
 /** What a send did, so callers can audit it without seeing the text again. */

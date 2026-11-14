@@ -7,6 +7,8 @@ export interface ProcessResult {
 export interface ProcessOptions {
   /** Extra environment variables, added to this process's environment. */
   readonly env?: Readonly<Record<string, string>>
+  /** Kills the program when aborted (shutdown, M1); it then ends with `exitCode: null`. */
+  readonly signal?: AbortSignal
 }
 
 /**
@@ -32,10 +34,15 @@ export const spawnProcess: ProcessRunner = async (argv, timeoutMs, options) => {
     timedOut = true
     child.kill()
   }, timeoutMs)
+  const kill = () => child.kill()
+  options?.signal?.addEventListener('abort', kill, { once: true })
+  if (options?.signal?.aborted === true) child.kill()
   try {
     const exitCode = await child.exited
-    return { exitCode: timedOut ? null : exitCode, timedOut }
+    const killed = timedOut || options?.signal?.aborted === true
+    return { exitCode: killed ? null : exitCode, timedOut }
   } finally {
     clearTimeout(timer)
+    options?.signal?.removeEventListener('abort', kill)
   }
 }

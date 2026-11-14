@@ -27,3 +27,7 @@ test('project name is the last directory segment on any OS', () => {
   expect(projectName(undefined)).toBeUndefined()
   expect(projectName(`/x/${'a'.repeat(200)}`)).toHaveLength(80)
 })
+
+test('the project name shown in a notice is sanitized', () => {
+  expect(projectName('/home/me/evil\u{202e}\u001b[2Kname')).toBe('evil [2Kname')
+})

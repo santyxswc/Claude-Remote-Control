@@ -10,15 +10,41 @@ export interface PromptButton {
 export type PromptKeyboard = readonly (readonly PromptButton[])[]
 
 /**
+ * What the redacting decorator does when a prompt, once redacted, is longer
+ * than one message. Callers pass the whole text: fitting happens only after
+ * redaction, so a secret cut in two is never sent half-visible (M3).
+ */
+export interface PromptOptions {
+  /**
+   * `refuse`: reject with `PromptTooLongError`, so the caller can send the
+   * details first (M2). `elide` (the default): keep the start and the end.
+   */
+  readonly overflow?: 'refuse' | 'elide'
+  /** Appended when the middle is elided, to say how much is not shown (M2). */
+  readonly hiddenNote?: (hidden: number) => string
+}
+
+/**
  * Messages with buttons. Kept apart from `ChatGateway`: a prompt is never
  * split, because its buttons must sit on the message that shows it. Like
- * `ChatGateway`, the application only ever gets the redacting decorator.
+ * `ChatGateway`, the application only ever gets the redacting decorator;
+ * platform adapters ignore `options`, the decorator has applied them.
  */
 export interface PromptGateway {
   /** Plain text plus buttons, as one message. Rejects when it was not delivered. */
-  sendPrompt(chatId: string, text: string, keyboard: PromptKeyboard): Promise<PromptRef>
+  sendPrompt(
+    chatId: string,
+    text: string,
+    keyboard: PromptKeyboard,
+    options?: PromptOptions,
+  ): Promise<PromptRef>
   /** Replaces the text and the buttons of a prompt sent earlier. */
-  editPrompt(ref: PromptRef, text: string, keyboard: PromptKeyboard): Promise<void>
+  editPrompt(
+    ref: PromptRef,
+    text: string,
+    keyboard: PromptKeyboard,
+    options?: PromptOptions,
+  ): Promise<void>
   /** Acknowledges a tap so the client stops its spinner; `text` shows as a short toast. */
   answerCallback(callbackId: string, text?: string): Promise<void>
 }

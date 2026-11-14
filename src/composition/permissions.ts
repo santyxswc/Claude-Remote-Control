@@ -55,7 +55,7 @@ export function buildPermissions(deps: PermissionWiringDeps): PermissionWiring {
   const { state, messages, clock, logger } = deps
   const session = deps.session ?? encodeBase64Url(new CryptoRandomSource().bytes(9))
   const store = state.permissions
-  const prompts = new PermissionPrompts(deps.outbound, messages, logger)
+  const prompts = new PermissionPrompts(deps.outbound, deps.outbound, messages, logger)
   const authorize = new AuthorizeSender(state.allowed)
   const common = { store, prompts, audit: state.audit, clock, logger, session }
   const resolve = new ResolvePermission({

@@ -58,3 +58,10 @@ export class PairingNotFoundError extends ApplicationError {
     super('The pairing no longer exists')
   }
 }
+
+/** A prompt does not fit one message once redacted; the caller sends its details first (M2). */
+export class PromptTooLongError extends ApplicationError {
+  constructor(readonly length: number) {
+    super(`The prompt is ${length} characters long once redacted`)
+  }
+}

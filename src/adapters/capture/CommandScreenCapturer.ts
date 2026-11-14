@@ -6,7 +6,7 @@ import type {
   ScreenCapturer,
 } from '../../application/ports/ScreenCapturer.ts'
 import type { CaptureTarget } from '../../domain/capture/CaptureTarget.ts'
-import type { ProcessRunner } from '../session/processRunner.ts'
+import type { ProcessOptions, ProcessRunner } from '../session/processRunner.ts'
 
 /** A screenshot tool may wait for a compositor or a permission dialog; not longer than this. */
 export const SCREEN_TOOL_TIMEOUT_MS = 20_000
@@ -40,17 +40,22 @@ export class CommandScreenCapturer implements ScreenCapturer {
     if (deps.tools.length === 0) throw new Error('no screen capture tool')
   }
 
-  async capture(target: CaptureTarget, workspace: CaptureWorkspace): Promise<CapturedImage> {
+  async capture(
+    target: CaptureTarget,
+    workspace: CaptureWorkspace,
+    signal?: AbortSignal,
+  ): Promise<CapturedImage> {
     if (target.kind !== 'screen') throw new Error('native tools only capture the screen')
     const output = workspace.imagePath
     for (const tool of this.deps.tools) {
+      if (signal?.aborted === true) throw new Error('the capture was cancelled')
       // A tool that failed halfway must not leave its file to the next one (scrot never overwrites).
       rmSync(output, { force: true })
       try {
         const result = await this.deps.run(
           tool.argv(output),
           SCREEN_TOOL_TIMEOUT_MS,
-          tool.env === undefined ? undefined : { env: tool.env(output) },
+          processOptions(tool.env?.(output), signal),
         )
         if (result.exitCode === 0 && nonEmptyFile(output)) {
           this.deps.logger.info('captured the screen', { tool: tool.name })
@@ -69,6 +74,14 @@ export class CommandScreenCapturer implements ScreenCapturer {
       `no screen capture tool succeeded (${this.deps.tools.map((t) => t.name).join(', ')})`,
     )
   }
+}
+
+function processOptions(
+  env: Readonly<Record<string, string>> | undefined,
+  signal: AbortSignal | undefined,
+): ProcessOptions | undefined {
+  if (env === undefined && signal === undefined) return undefined
+  return { ...(env === undefined ? {} : { env }), ...(signal === undefined ? {} : { signal }) }
 }
 
 function nonEmptyFile(path: string): boolean {

@@ -13,7 +13,7 @@ export interface ResumeSessionDeps {
 }
 
 /**
- * `/resume` and `telegram-bridge resume`: removes the brake flag, so tool
+ * `/resume` and `bun run bridge -- resume`: removes the brake flag, so tool
  * calls pass the PreToolUse hook again. Idempotent. It does not restart
  * Claude: the next prompt (from the terminal or the chat) does.
  */

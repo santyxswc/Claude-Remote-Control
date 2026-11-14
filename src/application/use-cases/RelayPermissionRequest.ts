@@ -93,8 +93,9 @@ export class RelayPermissionRequest {
     store.put(request)
 
     const recipients = this.deps.allowed.list().map((sender) => sender.id)
-    const refs = await this.deps.prompts.send(request, recipients)
-    const latest = this.#attachPrompts(request, refs)
+    const { refs, hidden } = await this.deps.prompts.send(request, recipients)
+    const latest = this.#attachPrompts(request, refs, hidden)
+    const risk = latest?.risk ?? assessment.level
 
     this.deps.audit.append({
       at: now,
@@ -103,15 +104,15 @@ export class RelayPermissionRequest {
       details: {
         requestId,
         toolName: incoming.toolName,
-        risk: assessment.level,
-        reasons: assessment.reasons.join(','),
+        risk,
+        reasons: [...assessment.reasons, ...(hidden ? ['input_not_shown'] : [])].join(','),
         recipients: recipients.length,
         delivered: refs.length,
       },
     })
     logger.info('relayed a permission request', {
       requestId,
-      risk: assessment.level,
+      risk,
       delivered: refs.length,
     })
 
@@ -146,15 +147,20 @@ export class RelayPermissionRequest {
     return 'denied_by_brake'
   }
 
-  /** Stores the message refs, retrying if a tap changed the request in between. */
+  /**
+   * Stores the message refs, and the raised risk when part of the input could
+   * not be shown (M2), retrying if a tap changed the request in between.
+   */
   #attachPrompts(
     request: PermissionRequest,
     refs: readonly PromptRef[],
+    hidden: boolean,
   ): PermissionRequest | undefined {
     if (refs.length === 0) return request
     let current: PermissionRequest | undefined = request
     while (current !== undefined) {
-      const next = current.withPrompts(refs)
+      const withRefs = current.withPrompts(refs)
+      const next = hidden ? withRefs.escalated() : withRefs
       if (this.deps.store.update(next, current.revision)) return next
       current = this.deps.store.findById(request.id)
     }

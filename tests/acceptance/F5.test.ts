@@ -153,7 +153,8 @@ test('/shot http://localhost:3000 sends the page as one photo with the warning c
   expect(photo?.caption).toContain('Images do not go through secret redaction')
   expect(api.uploads).toHaveLength(1)
   expect(Buffer.from(api.uploads[0]?.bytes ?? []).equals(Buffer.from(makePng(4, 3)))).toBe(true)
-  expect(texts()).toEqual([])
+  // M1: "capturing" right away, the capture runs in the background; the photo is the rest.
+  expect(texts()).toEqual([en.shotCapturing])
 
   // The browser ran headless, with a throwaway profile in our scratch dir, the URL last after --.
   expect(runs).toHaveLength(1)
