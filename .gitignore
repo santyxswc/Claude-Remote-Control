@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Local state and secrets (the real state lives under ~/.claude/channels/telegram-bridge)
+state/
+.env
+.env.*
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+
+# Tooling output
+coverage/
+dist/
+*.log
+.DS_Store
+Thumbs.db
+
+# Claude Code local settings
+.claude/settings.local.json

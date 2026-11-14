@@ -1,0 +1,36 @@
+# telegram-bridge
+
+A Claude Code channel (an MCP server over stdio) that bridges a Telegram chat to a local Claude
+Code session. The approved design is `docs/plan.md` (Spanish); each flow has its own brief in
+`docs/flows/`, and decisions live in `docs/adr/`.
+
+## Architecture rules
+
+- Layers: `src/domain` -> `src/application` (`ports/`, `use-cases/`) -> `src/adapters/*` ->
+  `src/main.ts`. Dependencies point inward only.
+- `src/domain` imports nothing outside `src/domain`: no npm packages, no `node:` or `bun:` builtins.
+- `src/application` imports only `src/domain`, `src/application` and `zod`.
+- The application layer defines the ports; adapters implement them. Keep ports small.
+- One use case per file, with a single reason to change.
+- `src/main.ts` is the only composition root and wires everything by hand (no DI container).
+- `bun run check:arch` enforces the import rules; do not weaken it to make code pass.
+
+## Runtime rules
+
+- stdout belongs to the MCP stdio transport. Never `console.log` in `src/`; log through the
+  `Logger` port (stderr).
+- Windows is a first-class target: build paths with `node:path`, never hardcode `/` paths, `~`,
+  Unix sockets or POSIX-only tools.
+- The channel contract is a research preview. Keep everything contract-specific inside
+  `src/adapters/mcp`, and check the official docs rather than memory before changing it.
+- Stay on `@modelcontextprotocol/sdk` 1.x: Claude Code does not register a channel server that
+  negotiates MCP protocol revision 2026-07-28 (see `docs/adr/0005-f0-findings.md`).
+
+## Workflow
+
+- Tests live in `tests/`, mirroring `src/`, and use test doubles for ports.
+- A flow is not closed until its tests exist and `bun run check` passes.
+- Commands:
+  - `bun run check`: lint, typecheck, architecture check and tests (what CI runs)
+  - `bun run format`: apply Biome formatting and safe fixes
+  - `bun test`: tests only
