@@ -327,7 +327,7 @@ El mayor riesgo es de plataforma: channels está en research preview y un canal 
 ### Decisiones abiertas
 
 - [ ] Nombre del proyecto y del repo.
-- [ ] Licencia: MIT o Apache-2.0.
+- [x] Licencia: MIT.
 - [ ] Wayland o X11 en tu Arch, para elegir el capturador nativo.
 
 ## Fuentes

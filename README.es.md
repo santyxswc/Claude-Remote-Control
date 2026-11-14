@@ -25,7 +25,7 @@ Los channels son una research preview de Claude Code: el flag y el protocolo pue
 
 Se agregará una demo después de la validación en vivo.
 
-Licencia: por decidir.
+Licencia: [MIT](LICENSE). Las fuentes Noto Sans incluidas usan la SIL Open Font License 1.1 (`assets/fonts/OFL.txt`).
 
 ## Qué hace
 
@@ -383,6 +383,7 @@ La documentación técnica está en inglés, salvo el diseño original.
 
 - [docs/architecture.md](docs/architecture.md): capas, puertos, procesos, patrones, archivos de estado
 - [docs/flows/README.md](docs/flows/README.md): índice de flujos y lista de validación en vivo
+- [docs/validacion-en-vivo-prompt.md](docs/validacion-en-vivo-prompt.md): prompt para hacer la validación en vivo con Claude Code
 - [docs/threat-model.md](docs/threat-model.md) y [SECURITY.md](SECURITY.md)
 - [docs/adr/](docs/adr/): decisiones y hallazgos sobre el contrato de Claude Code
 - [docs/roadmap.md](docs/roadmap.md): fases y decisiones abiertas
