@@ -1,11 +1,13 @@
 import type { Messages } from '../i18n/messages.ts'
 import type { AllowedSenderStore } from '../ports/AllowedSenderStore.ts'
 import type { BrakeFlag } from '../ports/BrakeFlag.ts'
+import type { CaptureScreenshot } from '../use-cases/CaptureScreenshot.ts'
 import type { ResumeSession } from '../use-cases/ResumeSession.ts'
 import type { StopSession } from '../use-cases/StopSession.ts'
 import { CommandRegistry } from './CommandRegistry.ts'
 import { HelpCommand } from './HelpCommand.ts'
 import { ResumeCommand } from './ResumeCommand.ts'
+import { ShotCommand } from './ShotCommand.ts'
 import { StartCommand } from './StartCommand.ts'
 import { StatusCommand } from './StatusCommand.ts'
 import { StopCommand } from './StopCommand.ts'
@@ -19,13 +21,15 @@ export interface CommandRegistryDeps {
   readonly brake: Pick<BrakeFlag, 'status'>
   readonly stopSession: StopSession
   readonly resumeSession: ResumeSession
+  /** F5; without it there is no `/shot`. */
+  readonly screenshots?: Pick<CaptureScreenshot, 'execute' | 'availableKinds'>
 }
 
-/** The chat commands, in `/help` order. Later flows register `/shot` here. */
+/** The chat commands, in `/help` order. */
 export function createCommandRegistry(deps: CommandRegistryDeps): CommandRegistry {
-  const { messages } = deps
+  const { messages, screenshots } = deps
   const registry = new CommandRegistry()
-  return registry
+  registry
     .register(new StartCommand(messages.commandStartDescription, messages.startGreeting))
     .register(new HelpCommand(messages.commandHelpDescription, registry, messages.help))
     .register(
@@ -37,6 +41,7 @@ export function createCommandRegistry(deps: CommandRegistryDeps): CommandRegistr
         isSessionConnected: deps.isSessionConnected,
         pendingPermissions: deps.pendingPermissions,
         brake: deps.brake,
+        ...(screenshots === undefined ? {} : { captureKinds: () => screenshots.availableKinds() }),
       }),
     )
     .register(
@@ -48,4 +53,10 @@ export function createCommandRegistry(deps: CommandRegistryDeps): CommandRegistr
         notEngaged: messages.resumeNotEngaged,
       }),
     )
+  if (screenshots !== undefined) {
+    registry.register(
+      new ShotCommand(messages.commandShotDescription, screenshots, messages.shotProblem),
+    )
+  }
+  return registry
 }

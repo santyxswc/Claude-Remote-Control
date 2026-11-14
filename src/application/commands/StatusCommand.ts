@@ -1,3 +1,4 @@
+import type { CaptureKind } from '../../domain/capture/CaptureTarget.ts'
 import type { StatusView } from '../i18n/messages.ts'
 import type { AllowedSenderStore } from '../ports/AllowedSenderStore.ts'
 import type { BrakeFlag } from '../ports/BrakeFlag.ts'
@@ -14,6 +15,8 @@ export interface StatusCommandDeps {
   /** Open permission requests of this session. */
   readonly pendingPermissions: () => number
   readonly brake: Pick<BrakeFlag, 'status'>
+  /** What `/shot` can capture here (F5); omitted when screenshots are not wired. */
+  readonly captureKinds?: () => readonly CaptureKind[]
 }
 
 /**
@@ -37,6 +40,7 @@ export class StatusCommand implements ChatCommand {
         sessionConnected: this.deps.isSessionConnected(),
         pendingPermissions: this.deps.pendingPermissions(),
         brake: this.#brake(),
+        ...(this.deps.captureKinds === undefined ? {} : { captureKinds: this.deps.captureKinds() }),
       }),
     )
   }

@@ -3,6 +3,7 @@ import type { AuditLog } from '../ports/AuditLog.ts'
 import type { ChatGateway } from '../ports/ChatGateway.ts'
 import type { Clock } from '../ports/Clock.ts'
 import type { Logger } from '../ports/Logger.ts'
+import { AuthorizeReplyTarget, auditableChatId } from './AuthorizeReplyTarget.ts'
 import type { AuthorizeSender } from './AuthorizeSender.ts'
 
 export interface ReplyRequest {
@@ -38,7 +39,6 @@ export interface SendReplyDeps {
 }
 
 const MESSAGE_ID = /^[1-9][0-9]{0,15}$/
-const PLAUSIBLE_CHAT_ID = /^-?[0-9]{1,20}$/
 
 /**
  * Claude's `reply` tool. Claude must not be steerable into messaging
@@ -48,7 +48,11 @@ const PLAUSIBLE_CHAT_ID = /^-?[0-9]{1,20}$/
  * never the text.
  */
 export class SendReply {
-  constructor(private readonly deps: SendReplyDeps) {}
+  readonly #target: AuthorizeReplyTarget
+
+  constructor(private readonly deps: SendReplyDeps) {
+    this.#target = new AuthorizeReplyTarget(deps.authorize, deps.extraChatIds)
+  }
 
   async execute(request: ReplyRequest): Promise<ReplyOutcome> {
     const { chatId } = request
@@ -88,9 +92,7 @@ export class SendReply {
   }
 
   #refusal(request: ReplyRequest): RefusalReason | undefined {
-    const allowed =
-      this.deps.extraChatIds.has(request.chatId) || this.deps.authorize.execute(request.chatId)
-    if (!allowed) return 'chat_not_allowed'
+    if (!this.#target.execute(request.chatId)) return 'chat_not_allowed'
     if (request.text.trim() === '') return 'empty_text'
     if (request.replyTo !== undefined && !MESSAGE_ID.test(request.replyTo)) {
       return 'invalid_reply_to'
@@ -104,9 +106,4 @@ export class SendReply {
   ): void {
     this.deps.audit.append({ at: this.deps.clock.now(), actor: 'session', event, details })
   }
-}
-
-/** Whatever Claude passed is untrusted: keep it only if it looks like an id. */
-function auditableChatId(chatId: string): string {
-  return PLAUSIBLE_CHAT_ID.test(chatId) ? chatId : 'invalid'
 }

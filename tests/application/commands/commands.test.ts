@@ -7,12 +7,18 @@ import {
 import { createCommandRegistry } from '../../../src/application/commands/createCommandRegistry.ts'
 import { HelpCommand } from '../../../src/application/commands/HelpCommand.ts'
 import { parseCommand } from '../../../src/application/commands/parseCommand.ts'
+import { ShotCommand } from '../../../src/application/commands/ShotCommand.ts'
 import { StartCommand } from '../../../src/application/commands/StartCommand.ts'
 import { StatusCommand } from '../../../src/application/commands/StatusCommand.ts'
 import { messagesFor } from '../../../src/application/i18n/messages.ts'
+import type {
+  CaptureOutcome,
+  CaptureRequest,
+} from '../../../src/application/use-cases/CaptureScreenshot.ts'
 import type { ResumeSession } from '../../../src/application/use-cases/ResumeSession.ts'
 import type { StopSession } from '../../../src/application/use-cases/StopSession.ts'
 import { allowSender } from '../../../src/domain/AllowedSender.ts'
+import type { CaptureKind } from '../../../src/domain/capture/CaptureTarget.ts'
 import { ALICE, InMemoryAllowedSenders, InMemoryBrakeFlag } from '../../fakes.ts'
 
 const en = messagesFor('en')
@@ -174,5 +180,108 @@ describe('createCommandRegistry', () => {
       ['stop', es.commandStopDescription],
       ['resume', es.commandResumeDescription],
     ])
+  })
+})
+
+describe('F5: /shot', () => {
+  function shot(outcome: CaptureOutcome) {
+    const requests: CaptureRequest[] = []
+    const command = new ShotCommand(
+      en.commandShotDescription,
+      {
+        execute: async (request) => {
+          requests.push(request)
+          return outcome
+        },
+      },
+      en.shotProblem,
+    )
+    return { command, requests }
+  }
+
+  test('/shot captures the screen and /shot <url> a page, as the sender; a sent image needs no text', async () => {
+    const { command, requests } = shot({ status: 'sent', as: 'photo', bytes: 10 })
+    const plain = context()
+    await command.execute(plain.ctx)
+    const page = context('localhost:3000')
+    await command.execute(page.ctx)
+    expect(requests).toEqual([
+      { chatId: ALICE.id, actor: `telegram:${ALICE.id}` },
+      { chatId: ALICE.id, actor: `telegram:${ALICE.id}`, url: 'localhost:3000' },
+    ])
+    expect([...plain.replies, ...page.replies]).toEqual([])
+  })
+
+  test.each([
+    [{ status: 'refused', reason: 'busy' }, 'A capture is already running'],
+    [{ status: 'invalid_url', problem: 'scheme' }, 'only http:// or https://'],
+    [{ status: 'too_large', bytes: 51_200_000 }, 'about 52 MB'],
+    [{ status: 'failed', stage: 'capture', error: 'secret detail' }, 'The capture failed'],
+  ] as const)('%p is explained', async (outcome, expected) => {
+    const { command } = shot(outcome)
+    const { ctx, replies } = context()
+    await command.execute(ctx)
+    expect(replies).toHaveLength(1)
+    expect(replies[0]).toContain(expected)
+    expect(replies[0]).not.toContain('secret detail')
+  })
+
+  test('unavailable says why and what to install', async () => {
+    const { command } = shot({
+      status: 'unavailable',
+      kind: 'screen',
+      detail: { reason: 'no_tool', remedies: ['grim (Sway, Hyprland)', 'spectacle (KDE)'] },
+    })
+    const { ctx, replies } = context()
+    await command.execute(ctx)
+    expect(replies).toEqual([
+      'Capturing the screen is not available here: no screenshot tool was found.\nTo enable it, install or set: grim (Sway, Hyprland), spectacle (KDE).',
+    ])
+  })
+
+  test('/status lists the capture kinds when screenshots are wired', async () => {
+    let kinds: readonly CaptureKind[] = ['screen', 'url']
+    const status = new StatusCommand({
+      description: '',
+      render: en.status,
+      botUsername: undefined,
+      allowed: new InMemoryAllowedSenders(),
+      isSessionConnected: () => true,
+      pendingPermissions: () => 0,
+      brake: new InMemoryBrakeFlag(),
+      captureKinds: () => kinds,
+    })
+    const { ctx, replies } = context()
+    await status.execute(ctx)
+    kinds = []
+    await status.execute(ctx)
+    expect(replies[0]).toContain('\nScreenshots: screen, web pages\n')
+    expect(replies[1]).toContain('\nScreenshots: none (/shot says what to install)\n')
+  })
+
+  test('the registry adds /shot last when screenshots are wired', () => {
+    const registry = createCommandRegistry({
+      messages: en,
+      botUsername: 'b',
+      allowed: new InMemoryAllowedSenders(),
+      isSessionConnected: () => true,
+      pendingPermissions: () => 0,
+      brake: new InMemoryBrakeFlag(),
+      stopSession: {} as StopSession,
+      resumeSession: {} as ResumeSession,
+      screenshots: {
+        execute: async () => ({ status: 'refused', reason: 'busy' }),
+        availableKinds: () => [],
+      },
+    })
+    expect(registry.list().map((c) => c.name)).toEqual([
+      'start',
+      'help',
+      'status',
+      'stop',
+      'resume',
+      'shot',
+    ])
+    expect(registry.find('shot')?.description).toBe(en.commandShotDescription)
   })
 })

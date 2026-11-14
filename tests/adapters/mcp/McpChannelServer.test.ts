@@ -11,7 +11,12 @@ import {
   McpChannelServer,
   PERMISSION_REQUEST_METHOD,
   PERMISSION_VERDICT_METHOD,
+  SCREENSHOT_TOOL_NAME,
 } from '../../../src/adapters/mcp/McpChannelServer.ts'
+import type {
+  CaptureOutcome,
+  CaptureRequest,
+} from '../../../src/application/use-cases/CaptureScreenshot.ts'
 import type { IncomingPermissionRequest } from '../../../src/application/use-cases/RelayPermissionRequest.ts'
 import type { ReplyOutcome, ReplyRequest } from '../../../src/application/use-cases/SendReply.ts'
 import { MemoryLogger } from '../../fakes.ts'
@@ -366,5 +371,103 @@ describe('permission relay', () => {
     expect(relayLogger.text).toContain('the relay is not ready')
     await client2.close()
     await lone.close()
+  })
+})
+
+describe('send_screenshot tool', () => {
+  let shots: CaptureRequest[]
+  let shotOutcome: CaptureOutcome | Error
+  let shotServer: McpChannelServer
+  let shotClient: Client
+
+  beforeEach(async () => {
+    shots = []
+    shotOutcome = { status: 'sent', as: 'photo', bytes: 1234 }
+    shotServer = new McpChannelServer({
+      name: 'telegram-bridge',
+      version: '0.0.0-test',
+      logger,
+      reply: async () => ({ status: 'sent', parts: 1, redactions: 0 }),
+      screenshot: async (request) => {
+        shots.push(request)
+        if (shotOutcome instanceof Error) throw shotOutcome
+        return shotOutcome
+      },
+    })
+    shotClient = new Client({ name: 'test-client', version: '0.0.0' })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await Promise.all([shotServer.connect(serverTransport), shotClient.connect(clientTransport)])
+  })
+
+  afterEach(async () => {
+    await shotClient.close()
+    await shotServer.close()
+  })
+
+  const shoot = async (args: Record<string, unknown>) =>
+    (await shotClient.callTool({ name: SCREENSHOT_TOOL_NAME, arguments: args })) as CallToolResult
+
+  test('is listed only when a screenshot handler is wired', async () => {
+    const { tools } = await shotClient.listTools()
+    expect(tools.map((t) => t.name)).toEqual(['reply', 'send_screenshot'])
+    expect(tools[1]).toMatchObject({
+      inputSchema: {
+        type: 'object',
+        properties: { chat_id: { type: 'string' }, url: { type: 'string' } },
+        required: ['chat_id'],
+      },
+    })
+    await expect(callTool(SCREENSHOT_TOOL_NAME, { chat_id: '1' })).rejects.toThrow('Unknown tool')
+  })
+
+  test('hands chat_id and url to the use case as the session', async () => {
+    expect(await shoot({ chat_id: '42' })).toEqual({
+      content: [{ type: 'text', text: 'sent as a photo (1234 bytes, not redacted)' }],
+    })
+    await shoot({ chat_id: '42', url: 'localhost:3000' })
+    expect(shots).toEqual([
+      { chatId: '42', actor: 'session' },
+      { chatId: '42', actor: 'session', url: 'localhost:3000' },
+    ])
+  })
+
+  test.each([
+    [{ status: 'refused', reason: 'chat_not_allowed' }, 'not the chat of a paired user'],
+    [{ status: 'refused', reason: 'busy' }, 'another screenshot is being taken'],
+    [{ status: 'invalid_url', problem: 'scheme' }, 'http:// or https://'],
+    [
+      {
+        status: 'unavailable',
+        kind: 'url',
+        detail: { reason: 'no_browser', remedies: ['chromium'] },
+      },
+      'cannot capture web pages (no_browser). The user can enable it with: chromium.',
+    ],
+    [{ status: 'too_large', bytes: 60_000_000 }, '50 MB'],
+    [
+      { status: 'failed', stage: 'send', error: 'Bad Request' },
+      'while trying to send: Bad Request',
+    ],
+  ] as const)('%p is an error result', async (outcome, text) => {
+    shotOutcome = outcome
+    const result = await shoot({ chat_id: '42' })
+    expect(result.isError).toBe(true)
+    expect(JSON.stringify(result.content)).toContain(text)
+  })
+
+  test('bad arguments and a crashing handler are error results', async () => {
+    expect((await shoot({})).isError).toBe(true)
+    expect((await shoot({ chat_id: '42', url: 7 })).isError).toBe(true)
+    expect(shots).toEqual([])
+    shotOutcome = new Error('boom')
+    expect(await shoot({ chat_id: '42' })).toEqual({
+      content: [{ type: 'text', text: 'Screenshot failed: internal error' }],
+      isError: true,
+    })
+  })
+
+  test('the instructions mention the tool and that images are not redacted', () => {
+    expect(CHANNEL_INSTRUCTIONS).toContain('send_screenshot')
+    expect(CHANNEL_INSTRUCTIONS).toContain('Images are not redacted')
   })
 })

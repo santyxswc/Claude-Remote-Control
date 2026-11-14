@@ -9,6 +9,10 @@ export interface ApiPayload {
   readonly limit?: number
   readonly chat_id?: string | number
   readonly text?: string
+  readonly caption?: string
+  /** Multipart uploads: `attach://<id>`, the file itself is in `uploads`. */
+  readonly photo?: string
+  readonly document?: string
   readonly allowed_updates?: readonly string[]
   readonly action?: string
   readonly parse_mode?: string
@@ -27,6 +31,15 @@ export interface ApiPayload {
 export interface ApiCall {
   readonly method: string
   readonly payload: ApiPayload
+}
+
+/** A file part of a multipart/form-data call (sendPhoto, sendDocument). */
+export interface ApiUpload {
+  readonly method: string
+  /** The form field: the id that `attach://<id>` in the payload names. */
+  readonly field: string
+  readonly filename: string
+  readonly bytes: Uint8Array
 }
 
 type Reply =
@@ -59,6 +72,7 @@ const BOT_INFO = {
  */
 export class FakeTelegramApi {
   readonly calls: ApiCall[] = []
+  readonly uploads: ApiUpload[] = []
   readonly urls: string[] = []
   readonly #updates: Update[] = []
   readonly #scripted = new Map<string, Reply[]>()
@@ -71,7 +85,12 @@ export class FakeTelegramApi {
     const url = String(input)
     this.urls.push(url)
     const method = url.slice(url.lastIndexOf('/') + 1)
-    const payload = typeof init?.body === 'string' ? (JSON.parse(init.body) as ApiPayload) : {}
+    const payload =
+      typeof init?.body === 'string'
+        ? (JSON.parse(init.body) as ApiPayload)
+        : init?.body == null
+          ? {}
+          : await this.#multipart(method, init)
     this.calls.push({ method, payload })
     const reply = await this.#reply(method, payload, init?.signal ?? undefined)
     if ('networkError' in reply) throw new Error(reply.networkError)
@@ -169,6 +188,17 @@ export class FakeTelegramApi {
             text: payload.text,
           },
         }
+      case 'sendPhoto':
+      case 'sendDocument':
+        return {
+          ok: true,
+          result: {
+            message_id: this.#nextMessageId++,
+            date: 0,
+            chat: { id: payload.chat_id, type: 'private' },
+            caption: payload.caption,
+          },
+        }
       case 'sendChatAction':
       case 'answerCallbackQuery':
         return { ok: true, result: true }
@@ -187,6 +217,34 @@ export class FakeTelegramApi {
       default:
         throw new Error(`FakeTelegramApi: unexpected method ${method}`)
     }
+  }
+
+  /**
+   * grammY streams uploads as multipart/form-data: plain fields become the
+   * payload (`chat_id` stays a string), file parts go to `uploads`.
+   */
+  async #multipart(method: string, init: RequestInit): Promise<ApiPayload> {
+    const chunks: Uint8Array[] = []
+    for await (const chunk of init.body as unknown as AsyncIterable<Uint8Array>) chunks.push(chunk)
+    const contentType = new Headers(init.headers).get('content-type') ?? ''
+    const form = await new Response(Buffer.concat(chunks), {
+      headers: { 'content-type': contentType },
+    }).formData()
+    const payload: Record<string, string> = {}
+    for (const [key, value] of form.entries()) {
+      if (typeof value === 'string') {
+        payload[key] = value
+      } else {
+        const file = value as File
+        this.uploads.push({
+          method,
+          field: key,
+          filename: file.name,
+          bytes: new Uint8Array(await file.arrayBuffer()),
+        })
+      }
+    }
+    return payload
   }
 
   async #takeUpdates(payload: ApiPayload, signal: AbortSignal | undefined): Promise<Update[]> {
