@@ -1,6 +1,9 @@
 import { Api, GrammyError } from 'grammy'
+import type { InlineKeyboardMarkup } from 'grammy/types'
 import type { ChatGateway, SendOptions, SendReceipt } from '../../application/ports/ChatGateway.ts'
+import type { PromptGateway, PromptKeyboard } from '../../application/ports/PromptGateway.ts'
 import type { Sleeper } from '../../application/ports/Sleeper.ts'
+import type { PromptRef } from '../../domain/permissions/PermissionRequest.ts'
 import { TimerSleeper } from '../system/TimerSleeper.ts'
 import { describeTelegramError, TelegramCallError } from './redact.ts'
 
@@ -13,11 +16,16 @@ import { describeTelegramError, TelegramCallError } from './redact.ts'
  */
 export const TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 
+/** Bot API: `callback_data` of an inline button is "1-64 bytes". */
+export const TELEGRAM_MAX_CALLBACK_DATA_BYTES = 64
+
 const SEND_TIMEOUT_SECONDS = 30
 /** 429 Too Many Requests: retry at most this many times... */
 const MAX_FLOOD_RETRIES = 3
 /** ...and only when Telegram asks to wait no longer than this; otherwise fail now. */
 const MAX_RETRY_AFTER_SECONDS = 60
+
+const NO_PREVIEW = { link_preview_options: { is_disabled: true } } as const
 
 export interface TelegramChatGatewayOptions {
   /** Replaces the network, for tests. */
@@ -30,9 +38,9 @@ export interface TelegramChatGatewayOptions {
  * The raw Telegram adapter. Plain text only (no parse mode, so nothing in the
  * text is interpreted as markup or hidden links) and link previews disabled.
  * Only `src/composition/outbound.ts` may construct it: everything else gets
- * it wrapped in the redacting and chunking decorators.
+ * it wrapped in the redacting (and, for plain text, chunking) decorators.
  */
-export class TelegramChatGateway implements ChatGateway {
+export class TelegramChatGateway implements ChatGateway, PromptGateway {
   readonly #api: Api
   readonly #token: string
   readonly #sleeper: Sleeper
@@ -50,7 +58,7 @@ export class TelegramChatGateway implements ChatGateway {
     const replyTo = options?.replyTo
     await this.#call(() =>
       this.#api.sendMessage(chatId, text, {
-        link_preview_options: { is_disabled: true },
+        ...NO_PREVIEW,
         ...(replyTo === undefined
           ? {}
           : {
@@ -69,11 +77,40 @@ export class TelegramChatGateway implements ChatGateway {
     }
   }
 
-  async #call(send: () => Promise<unknown>): Promise<void> {
+  async sendPrompt(chatId: string, text: string, keyboard: PromptKeyboard): Promise<PromptRef> {
+    const sent = await this.#call(() =>
+      this.#api.sendMessage(chatId, text, { ...NO_PREVIEW, reply_markup: toMarkup(keyboard) }),
+    )
+    return { chatId, messageId: String(sent.message_id) }
+  }
+
+  /** An empty keyboard removes the buttons. Editing to identical content is not an error. */
+  async editPrompt(ref: PromptRef, text: string, keyboard: PromptKeyboard): Promise<void> {
+    try {
+      await this.#call(() =>
+        this.#api.editMessageText(ref.chatId, Number(ref.messageId), text, {
+          ...NO_PREVIEW,
+          reply_markup: toMarkup(keyboard),
+        }),
+      )
+    } catch (error) {
+      if (error instanceof TelegramCallError && /message is not modified/i.test(error.message)) {
+        return
+      }
+      throw error
+    }
+  }
+
+  async answerCallback(callbackId: string, text?: string): Promise<void> {
+    await this.#call(() =>
+      this.#api.answerCallbackQuery(callbackId, text === undefined ? {} : { text }),
+    )
+  }
+
+  async #call<T>(send: () => Promise<T>): Promise<T> {
     for (let attempt = 0; ; attempt++) {
       try {
-        await send()
-        return
+        return await send()
       } catch (error) {
         const wait = floodWaitSeconds(error)
         if (wait === undefined || attempt >= MAX_FLOOD_RETRIES || wait > MAX_RETRY_AFTER_SECONDS) {
@@ -82,6 +119,19 @@ export class TelegramChatGateway implements ChatGateway {
         await this.#sleeper.sleep(wait * 1000)
       }
     }
+  }
+}
+
+function toMarkup(keyboard: PromptKeyboard): InlineKeyboardMarkup {
+  return {
+    inline_keyboard: keyboard.map((row) =>
+      row.map((button) => {
+        if (new TextEncoder().encode(button.data).length > TELEGRAM_MAX_CALLBACK_DATA_BYTES) {
+          throw new Error('callback data is longer than Telegram allows')
+        }
+        return { text: button.label, callback_data: button.data }
+      }),
+    ),
   }
 }
 

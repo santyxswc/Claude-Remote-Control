@@ -14,12 +14,15 @@ import { RedactingLogger } from '../../src/adapters/logging/RedactingLogger.ts'
 import { McpChannelServer } from '../../src/adapters/mcp/McpChannelServer.ts'
 import { openState, type StateStores } from '../../src/adapters/storage/openState.ts'
 import { DotEnvProjectSecrets } from '../../src/adapters/system/DotEnvProjectSecrets.ts'
-import type { PollingSupervisor } from '../../src/adapters/telegram/PollingSupervisor.ts'
+
 import { TELEGRAM_MAX_MESSAGE_LENGTH } from '../../src/adapters/telegram/TelegramChatGateway.ts'
 import { messagesFor } from '../../src/application/i18n/messages.ts'
 import { buildOutbound } from '../../src/composition/outbound.ts'
 import { buildSendReply } from '../../src/composition/replies.ts'
-import { startTelegramInbound } from '../../src/composition/telegramInbound.ts'
+import {
+  startTelegramInbound,
+  type TelegramInbound,
+} from '../../src/composition/telegramInbound.ts'
 import { allowSender } from '../../src/domain/AllowedSender.ts'
 import { REDACTION_MARK } from '../../src/domain/redaction/SecretRedactor.ts'
 import { FakeClock, FakeSleeper, MemoryLogger } from '../fakes.ts'
@@ -34,7 +37,7 @@ const PROJECT_SECRET = 'Zq8!vR2#pL-0042-db'
 let stateDir: string
 let projectDir: string
 let state: StateStores
-let polling: PollingSupervisor
+let polling: TelegramInbound
 let server: McpChannelServer
 let client: Client
 let api: FakeTelegramApi
@@ -187,7 +190,10 @@ test('commands answer in the chat; unknown /commands and edits are handled as sp
   expect(sent()[0]?.text).toContain('MCP connection to Claude Code: open')
   expect(sent()[1]?.text).toBe(en.onlyTextSupported)
   // Edited messages are not even requested from Telegram.
-  expect(api.callsTo('getUpdates')[0]?.payload.allowed_updates).toEqual(['message'])
+  expect(api.callsTo('getUpdates')[0]?.payload.allowed_updates).toEqual([
+    'message',
+    'callback_query',
+  ])
 })
 
 test('reply: redacted, chunked, in order, threaded, plain text, retried after a 429', async () => {

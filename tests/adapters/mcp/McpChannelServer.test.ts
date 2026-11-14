@@ -9,7 +9,10 @@ import {
   CHANNEL_INSTRUCTIONS,
   InvalidChannelMetaError,
   McpChannelServer,
+  PERMISSION_REQUEST_METHOD,
+  PERMISSION_VERDICT_METHOD,
 } from '../../../src/adapters/mcp/McpChannelServer.ts'
+import type { IncomingPermissionRequest } from '../../../src/application/use-cases/RelayPermissionRequest.ts'
 import type { ReplyOutcome, ReplyRequest } from '../../../src/application/use-cases/SendReply.ts'
 import { MemoryLogger } from '../../fakes.ts'
 
@@ -76,7 +79,7 @@ describe('initialization', () => {
     })
   })
 
-  test('does not declare permission relay yet (that is F3)', () => {
+  test('does not declare permission relay unless enabled', () => {
     expect(client.getServerCapabilities()?.experimental).not.toHaveProperty(
       'claude/channel/permission',
     )
@@ -240,5 +243,128 @@ describe('connection state', () => {
     await server.close()
     expect(server.isConnected).toBe(false)
     expect(closed).toBeGreaterThan(0)
+  })
+})
+
+describe('permission relay', () => {
+  let relayServer: McpChannelServer
+  let relayClient: Client
+  let relayLogger: MemoryLogger
+  let received: IncomingPermissionRequest[]
+  let wire: { method: string; params?: unknown }[]
+
+  beforeEach(async () => {
+    relayLogger = new MemoryLogger()
+    received = []
+    wire = []
+    relayServer = new McpChannelServer({
+      name: 'telegram-bridge',
+      version: '0.0.0-test',
+      logger: relayLogger,
+      reply: async () => ({ status: 'sent', parts: 1, redactions: 0 }),
+      permissionRelay: true,
+    })
+    relayServer.onPermissionRequest(async (request) => void received.push(request))
+    relayClient = new Client({ name: 'fake-claude-code', version: '0.0.0' })
+    relayClient.fallbackNotificationHandler = async (n) => void wire.push(n)
+    const [c, s] = InMemoryTransport.createLinkedPair()
+    await Promise.all([relayServer.connect(s), relayClient.connect(c)])
+  })
+
+  afterEach(async () => {
+    await relayClient.close()
+    await relayServer.close()
+  })
+
+  const ask = (params: unknown) =>
+    relayClient.notification({ method: PERMISSION_REQUEST_METHOD, params } as never)
+
+  async function settle(): Promise<void> {
+    for (let i = 0; i < 5; i++) await Bun.sleep(1)
+  }
+
+  test('declares claude/channel/permission when enabled', () => {
+    expect(relayClient.getServerCapabilities()?.experimental).toEqual({
+      'claude/channel': {},
+      'claude/channel/permission': {},
+    })
+  })
+
+  test('hands a valid permission_request to the handler', async () => {
+    await ask({
+      request_id: 'abcde',
+      tool_name: 'Bash',
+      description: 'List files',
+      input_preview: '{"command":"ls"}',
+    })
+    await settle()
+    expect(received).toEqual([
+      {
+        requestId: 'abcde',
+        toolName: 'Bash',
+        description: 'List files',
+        inputPreview: '{"command":"ls"}',
+      },
+    ])
+  })
+
+  test.each([
+    [{ request_id: 'abcdl', tool_name: 'Bash', description: '', input_preview: '' }],
+    [{ request_id: 'ABCDE', tool_name: 'Bash', description: '', input_preview: '' }],
+    [{ request_id: 'abcde', tool_name: '', description: '', input_preview: '' }],
+    [{ request_id: 'abcde', tool_name: 'Bash', description: 1, input_preview: '' }],
+    [{ request_id: 'abcde', tool_name: 'Bash', description: '' }],
+    [undefined],
+  ])('ignores and logs a malformed request %#, without its values', async (params) => {
+    await ask(params)
+    await settle()
+    expect(received).toEqual([])
+    expect(relayLogger.text).toContain('ignored a malformed permission request')
+    expect(relayLogger.text).not.toContain('abcdl')
+    expect(relayLogger.text).not.toContain('ABCDE')
+  })
+
+  test('sendVerdict emits notifications/claude/channel/permission', async () => {
+    await relayServer.sendVerdict('abcde', 'allow')
+    await relayServer.sendVerdict('fghij', 'deny')
+    await settle()
+    expect(wire).toEqual([
+      {
+        method: PERMISSION_VERDICT_METHOD,
+        params: { request_id: 'abcde', behavior: 'allow' },
+        jsonrpc: '2.0',
+      },
+      {
+        method: PERMISSION_VERDICT_METHOD,
+        params: { request_id: 'fghij', behavior: 'deny' },
+        jsonrpc: '2.0',
+      },
+    ] as never)
+  })
+
+  test('refuses to send a malformed verdict', async () => {
+    await expect(relayServer.sendVerdict('abcdl', 'allow')).rejects.toThrow()
+    await expect(relayServer.sendVerdict('abcde', 'maybe' as never)).rejects.toThrow()
+  })
+
+  test('without a handler, requests are ignored', async () => {
+    const lone = new McpChannelServer({
+      name: 'x',
+      version: '0',
+      logger: relayLogger,
+      reply: async () => ({ status: 'sent', parts: 1, redactions: 0 }),
+      permissionRelay: true,
+    })
+    const client2 = new Client({ name: 'c', version: '0' })
+    const [c, s] = InMemoryTransport.createLinkedPair()
+    await Promise.all([lone.connect(s), client2.connect(c)])
+    await client2.notification({
+      method: PERMISSION_REQUEST_METHOD,
+      params: { request_id: 'abcde', tool_name: 'Bash', description: '', input_preview: '' },
+    } as never)
+    await settle()
+    expect(relayLogger.text).toContain('the relay is not ready')
+    await client2.close()
+    await lone.close()
   })
 })

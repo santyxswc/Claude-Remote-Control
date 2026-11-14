@@ -1,4 +1,5 @@
-import type { Message } from 'grammy/types'
+import type { CallbackQuery, Message } from 'grammy/types'
+import type { InboundCallback } from '../../application/callbacks/InboundCallback.ts'
 import type { ChatKind, InboundMessage } from '../../application/pipeline/InboundMessage.ts'
 import type { SenderProfile } from '../../domain/Sender.ts'
 
@@ -15,6 +16,18 @@ export function toInboundMessage(message: Message): InboundMessage {
     sender: toSender(message.from),
     text: message.text,
     sentAt: message.date * 1000,
+  }
+}
+
+/** Maps a button tap. A tap on a message from an inline query has no chat and gets none. */
+export function toInboundCallback(query: CallbackQuery): InboundCallback {
+  const chat = query.message?.chat
+  return {
+    id: query.id,
+    chatId: chat === undefined ? undefined : String(chat.id),
+    chatKind: chat?.type as ChatKind | undefined,
+    sender: toSender(query.from),
+    data: query.data,
   }
 }
 

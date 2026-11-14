@@ -93,6 +93,7 @@ describe('F2 commands', () => {
       botUsername: 'test_bot',
       allowed,
       isSessionConnected: () => connected,
+      pendingPermissions: () => 2,
     })
     const { ctx, replies } = context()
     await status.execute(ctx)
@@ -103,6 +104,7 @@ describe('F2 commands', () => {
         'Bot: @test_bot',
         'Paired since: 2026-11-13T09:30:00.000Z',
         'MCP connection to Claude Code: open',
+        'Pending permission requests: 2',
         'From here it cannot be known whether the session loaded this channel or whether Claude is busy.',
       ].join('\n'),
     )
@@ -116,6 +118,7 @@ describe('F2 commands', () => {
       botUsername: undefined,
       allowed: new InMemoryAllowedSenders(),
       isSessionConnected: () => true,
+      pendingPermissions: () => 0,
     })
     const { ctx, replies } = context()
     await status.execute(ctx)
@@ -129,6 +132,7 @@ describe('F2 commands', () => {
       botUsername: 'b',
       allowed: new InMemoryAllowedSenders(),
       isSessionConnected: () => true,
+      pendingPermissions: () => 0,
     })
     expect(registry.list().map((c) => [c.name, c.description])).toEqual([
       ['start', messagesFor('es').commandStartDescription],

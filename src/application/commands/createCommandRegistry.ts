@@ -10,6 +10,7 @@ export interface CommandRegistryDeps {
   readonly botUsername: string | undefined
   readonly allowed: AllowedSenderStore
   readonly isSessionConnected: () => boolean
+  readonly pendingPermissions: () => number
 }
 
 /** The F2 commands. Later flows register `/stop`, `/shot`, `/resume` here. */
@@ -26,6 +27,7 @@ export function createCommandRegistry(deps: CommandRegistryDeps): CommandRegistr
         botUsername: deps.botUsername,
         allowed: deps.allowed,
         isSessionConnected: deps.isSessionConnected,
+        pendingPermissions: deps.pendingPermissions,
       }),
     )
 }

@@ -1,10 +1,13 @@
 /**
  * Wires the inbound side of the channel: the Chain of Responsibility from
- * Telegram polling to the session, under the single-poller lock.
+ * Telegram polling to the session, the button-tap path and the permission
+ * relay, under the single-poller lock.
  */
+import type { PermissionRequestHandler } from '../adapters/mcp/McpChannelServer.ts'
 import { UnknownSessionActivity } from '../adapters/session/UnknownSessionActivity.ts'
 import type { StateStores } from '../adapters/storage/openState.ts'
 import { LOCK_HEARTBEAT_MS } from '../adapters/storage/SqlitePollerLock.ts'
+import { type Every, realEvery } from '../adapters/system/every.ts'
 import { Sha256SecretHasher } from '../adapters/system/Sha256SecretHasher.ts'
 import { PollingSupervisor } from '../adapters/telegram/PollingSupervisor.ts'
 import { TelegramPoller } from '../adapters/telegram/TelegramPoller.ts'
@@ -16,31 +19,64 @@ import type { ChannelPort } from '../application/ports/ChannelPort.ts'
 import type { ChatGateway } from '../application/ports/ChatGateway.ts'
 import type { Clock } from '../application/ports/Clock.ts'
 import type { Logger } from '../application/ports/Logger.ts'
+import type { PermissionVerdictPort } from '../application/ports/PermissionVerdictPort.ts'
+import type { PromptGateway } from '../application/ports/PromptGateway.ts'
 import { AuthorizeSender } from '../application/use-cases/AuthorizeSender.ts'
 import { ClaimPairing } from '../application/use-cases/ClaimPairing.ts'
 import { HandleInboundMessage } from '../application/use-cases/HandleInboundMessage.ts'
+import { buildPermissions, type PermissionWiring } from './permissions.ts'
 
 /** While another process polls the bot, check this often whether it has finished. */
 const LOCK_RETRY_MS = 30_000
+
+/** How often open permission requests are checked for expiry and confirmation timeouts. */
+export const PERMISSION_SWEEP_MS = 5_000
+
+/** What the inbound side needs from the MCP adapter. */
+export interface SessionChannel extends ChannelPort, PermissionVerdictPort {
+  readonly isConnected: boolean
+  onPermissionRequest(handler: PermissionRequestHandler): void
+}
 
 export interface TelegramInboundDeps {
   readonly state: StateStores
   readonly token: string
   /** The decorated outbound gateway from `buildOutbound`. */
-  readonly chat: ChatGateway
-  readonly channel: ChannelPort & { readonly isConnected: boolean }
+  readonly chat: ChatGateway & PromptGateway
+  readonly channel: SessionChannel
   readonly messages: Messages
   readonly clock: Clock
   readonly logger: Logger
-  /** Test seams for the poller. */
+  /** Test seams. */
   readonly fetch?: typeof fetch
   readonly pollTimeoutSeconds?: number
+  readonly every?: Every
+  readonly session?: string
 }
 
-/** Starts polling (or waiting for the lock) and returns the supervisor to stop it. */
-export function startTelegramInbound(deps: TelegramInboundDeps): PollingSupervisor {
+export interface TelegramInbound {
+  readonly permissions: PermissionWiring
+  stop(): Promise<void>
+}
+
+/** Starts polling (or waiting for the lock) and the permission upkeep; `stop` ends both. */
+export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound {
   const { state, chat, messages, clock, logger } = deps
+  const every = deps.every ?? realEvery
   const botUsername = state.identities.load()?.username
+  let polling: PollingSupervisor | undefined
+  const permissions = buildPermissions({
+    state,
+    outbound: chat,
+    verdicts: deps.channel,
+    messages,
+    clock,
+    logger,
+    canRelay: () => polling?.isPolling === true,
+    ...(deps.session === undefined ? {} : { session: deps.session }),
+  })
+  deps.channel.onPermissionRequest((request) => permissions.relay.execute(request))
+
   const forward = new HandleInboundMessage({
     channel: deps.channel,
     chat,
@@ -55,6 +91,7 @@ export function startTelegramInbound(deps: TelegramInboundDeps): PollingSupervis
     botUsername,
     allowed: state.allowed,
     isSessionConnected: () => deps.channel.isConnected,
+    pendingPermissions: permissions.pendingCount,
   })
   const pipeline = createInboundPipeline({
     claimPairing: new ClaimPairing({
@@ -77,9 +114,10 @@ export function startTelegramInbound(deps: TelegramInboundDeps): PollingSupervis
       commands,
       forward,
       botUsername,
+      permissionVerdicts: permissions.verdictStep,
     }),
   })
-  const polling = new PollingSupervisor({
+  polling = new PollingSupervisor({
     lock: state.lock,
     poller: new TelegramPoller({
       token: deps.token,
@@ -90,11 +128,46 @@ export function startTelegramInbound(deps: TelegramInboundDeps): PollingSupervis
         : { pollTimeoutSeconds: deps.pollTimeoutSeconds }),
     }),
     handler: pipeline,
+    callbackHandler: (callback) => permissions.callbacks.handle(callback),
+    // Requests relayed by an earlier poller can no longer be answered from the chat.
+    onPollingStarted: () =>
+      void guarded(logger, 'expiring orphaned permission requests', () =>
+        permissions.expire.expireOrphans(),
+      ),
     logger,
     role: 'channel',
     heartbeatMs: LOCK_HEARTBEAT_MS,
     retryMs: LOCK_RETRY_MS,
+    every,
   })
+
+  let sweeping = false
+  const cancelSweep = every(PERMISSION_SWEEP_MS, () => {
+    if (sweeping) return
+    sweeping = true
+    void guarded(logger, 'permission expiry sweep', () => permissions.expire.execute()).finally(
+      () => {
+        sweeping = false
+      },
+    )
+  })
+
   polling.start()
-  return polling
+  const supervisor = polling
+  return {
+    permissions,
+    async stop() {
+      cancelSweep()
+      await supervisor.stop()
+    },
+  }
+}
+
+/** Background work must never become an unhandled rejection. */
+async function guarded(logger: Logger, what: string, work: () => Promise<unknown>): Promise<void> {
+  try {
+    await work()
+  } catch (error) {
+    logger.error(`${what} failed`, { error })
+  }
 }

@@ -11,12 +11,44 @@ import {
 import { z } from 'zod'
 import type { ChannelEvent, ChannelPort } from '../../application/ports/ChannelPort.ts'
 import type { Logger } from '../../application/ports/Logger.ts'
+import type {
+  PermissionVerdictPort,
+  VerdictBehavior,
+} from '../../application/ports/PermissionVerdictPort.ts'
+import type { IncomingPermissionRequest } from '../../application/use-cases/RelayPermissionRequest.ts'
 import type { ReplyOutcome, ReplyRequest } from '../../application/use-cases/SendReply.ts'
 
 /** Notification method defined by the Claude Code channel contract. */
 export const CHANNEL_NOTIFICATION_METHOD = 'notifications/claude/channel'
 
+/** Claude Code -> channel: a tool approval dialog opened (channels reference, "Relay permission prompts"). */
+export const PERMISSION_REQUEST_METHOD = 'notifications/claude/channel/permission_request'
+
+/** Channel -> Claude Code: the verdict for one request. */
+export const PERMISSION_VERDICT_METHOD = 'notifications/claude/channel/permission'
+
 export const REPLY_TOOL_NAME = 'reply'
+
+/** "Five lowercase letters drawn from a-z without l". */
+const REQUEST_ID = /^[a-km-z]{5}$/
+
+/** Claude Code caps each field at 3,500 code points; anything far beyond is not from it. */
+const MAX_PERMISSION_FIELD_LENGTH = 65_536
+
+/** Dispatch key only; the params are validated by hand so a bad request is logged, not thrown. */
+const PermissionRequestNotification = z.object({
+  method: z.literal(PERMISSION_REQUEST_METHOD),
+  params: z.unknown().optional(),
+})
+
+const PermissionRequestParams = z.object({
+  request_id: z.string().regex(REQUEST_ID),
+  tool_name: z.string().min(1).max(256),
+  description: z.string().max(MAX_PERMISSION_FIELD_LENGTH),
+  input_preview: z.string().max(MAX_PERMISSION_FIELD_LENGTH),
+})
+
+export type PermissionRequestHandler = (request: IncomingPermissionRequest) => Promise<unknown>
 
 export const CHANNEL_INSTRUCTIONS = [
   'Messages from the user arrive as <channel source="telegram-bridge" chat_id="..." message_id="..." user="..." ts="...">:',
@@ -84,33 +116,50 @@ export interface McpChannelServerOptions {
   readonly version: string
   readonly reply: ReplyHandler
   readonly logger: Logger
+  /**
+   * Declare `claude/channel/permission`. Only when senders are authenticated
+   * (a bot token and the allowlist are available): whoever can answer through
+   * the channel can approve tool use in the session.
+   */
+  readonly permissionRelay?: boolean
 }
 
 /**
  * Adapter between the MCP SDK and the application: declares the
  * `claude/channel` capability, pushes inbound events as channel
- * notifications and exposes the `reply` tool backed by `SendReply`.
+ * notifications, exposes the `reply` tool backed by `SendReply` and, when
+ * enabled, relays permission prompts and sends their verdicts.
  */
-export class McpChannelServer implements ChannelPort {
+export class McpChannelServer implements ChannelPort, PermissionVerdictPort {
   readonly #server: Server
   readonly #reply: ReplyHandler
   readonly #logger: Logger
   readonly #closeHandlers: (() => void)[] = []
+  #permissionHandler: PermissionRequestHandler | undefined
   #connected = false
 
   constructor(options: McpChannelServerOptions) {
     this.#reply = options.reply
     this.#logger = options.logger
+    const relay = options.permissionRelay === true
     this.#server = new Server(
       { name: options.name, version: options.version },
       {
         capabilities: {
-          experimental: { 'claude/channel': {} },
+          experimental: {
+            'claude/channel': {},
+            ...(relay ? { 'claude/channel/permission': {} } : {}),
+          },
           tools: {},
         },
         instructions: CHANNEL_INSTRUCTIONS,
       },
     )
+    if (relay) {
+      this.#server.setNotificationHandler(PermissionRequestNotification, (notification) =>
+        this.#handlePermissionRequest(notification.params),
+      )
+    }
     this.#server.onclose = () => {
       this.#connected = false
       for (const handler of this.#closeHandlers) handler()
@@ -153,6 +202,47 @@ export class McpChannelServer implements ChannelPort {
       params.meta = { ...event.meta }
     }
     await this.#server.notification({ method: CHANNEL_NOTIFICATION_METHOD, params })
+  }
+
+  /** Where permission requests go. Until it is set they are ignored (and logged). */
+  onPermissionRequest(handler: PermissionRequestHandler): void {
+    this.#permissionHandler = handler
+  }
+
+  async sendVerdict(requestId: string, behavior: VerdictBehavior): Promise<void> {
+    if (!REQUEST_ID.test(requestId) || (behavior !== 'allow' && behavior !== 'deny')) {
+      throw new Error('refusing to send a malformed permission verdict')
+    }
+    await this.#server.notification({
+      method: PERMISSION_VERDICT_METHOD,
+      params: { request_id: requestId, behavior },
+    })
+  }
+
+  async #handlePermissionRequest(rawParams: unknown): Promise<void> {
+    const parsed = PermissionRequestParams.safeParse(rawParams)
+    if (!parsed.success) {
+      // Field names only: the values are untrusted and may hold secrets.
+      const fields = parsed.error.issues.map((issue) => issue.path.join('.'))
+      this.#logger.warn('ignored a malformed permission request', { fields })
+      return
+    }
+    const handler = this.#permissionHandler
+    if (handler === undefined) {
+      this.#logger.warn('ignored a permission request: the relay is not ready')
+      return
+    }
+    const { request_id, tool_name, description, input_preview } = parsed.data
+    try {
+      await handler({
+        requestId: request_id,
+        toolName: tool_name,
+        description,
+        inputPreview: input_preview,
+      })
+    } catch (error) {
+      this.#logger.error('relaying a permission request failed', { requestId: request_id, error })
+    }
   }
 
   async #handleReply(rawArgs: unknown): Promise<CallToolResult> {

@@ -3,6 +3,8 @@
  * default; `TELEGRAM_BRIDGE_LOCALE=en` switches to English. Diagnostic logs
  * on stderr are not user-facing and stay in English.
  */
+import type { PermissionOutcome } from '../permissions/PermissionOutcome.ts'
+
 export type Locale = 'es' | 'en'
 
 export const DEFAULT_LOCALE: Locale = 'es'
@@ -20,6 +22,23 @@ export interface StatusView {
   readonly pairedSince: string | undefined
   /** Whether the MCP connection to Claude Code is open. */
   readonly sessionConnected: boolean
+  /** Permission requests of this session still waiting for an answer. */
+  readonly pendingPermissions: number
+}
+
+/** A permission prompt's content; every field from Claude Code is untrusted plain text. */
+export interface PermissionPromptView {
+  readonly requestId: string
+  readonly toolName: string
+  readonly description: string
+  readonly inputPreview: string
+  readonly risk: 'low' | 'high'
+}
+
+/** Who closed a request and when (ISO 8601). */
+export interface PermissionDecisionView {
+  readonly who: string
+  readonly at: string
 }
 
 export interface CommandHelp {
@@ -40,6 +59,17 @@ export interface Messages {
   readonly onlyTextSupported: string
   readonly queued: string
   readonly deliveryFailed: string
+
+  // Bot: permission relay
+  readonly permissionPrompt: (view: PermissionPromptView) => string
+  readonly permissionAwaitingConfirmation: (seconds: number) => string
+  readonly permissionApproved: (decision: PermissionDecisionView) => string
+  readonly permissionDenied: (decision: PermissionDecisionView) => string
+  readonly permissionExpired: string
+  readonly permissionResolvedLocally: string
+  readonly permissionButtons: Readonly<Record<'approve' | 'deny' | 'confirm' | 'cancel', string>>
+  /** Short (a toast holds 200 characters): what a tap or a text verdict did. */
+  readonly permissionFeedback: (outcome: PermissionOutcome) => string
 
   // CLI: general
   readonly usage: string
@@ -115,6 +145,39 @@ function commandList(commands: readonly CommandHelp[]): string {
   return commands.map((c) => `/${c.name} - ${c.description}`).join('\n')
 }
 
+const PERMISSION_FEEDBACK_ES: Readonly<Record<PermissionOutcome, string>> = {
+  approved: 'Aprobado.',
+  denied: 'Denegado.',
+  confirmation_requested: 'Riesgo alto: confirma la aprobación con el botón.',
+  confirmation_cancelled: 'Aprobación cancelada; la solicitud sigue pendiente.',
+  confirmation_expired: 'Se acabó el tiempo para confirmar. Vuelve a pulsar Aprobar.',
+  use_button:
+    'Riesgo alto: para aprobar usa los botones de la solicitud (Aprobar y luego Confirmar).',
+  already_resolved: 'Esa solicitud ya se resolvió.',
+  expired: 'Esa solicitud ya venció.',
+  not_found: 'Esa solicitud ya no existe.',
+  not_allowed: 'No autorizado.',
+  invalid: 'Esa acción ya no aplica a la solicitud.',
+  delivery_failed:
+    'No se pudo enviar la respuesta a Claude Code. Inténtalo de nuevo o responde en la terminal.',
+}
+
+const PERMISSION_FEEDBACK_EN: Readonly<Record<PermissionOutcome, string>> = {
+  approved: 'Approved.',
+  denied: 'Denied.',
+  confirmation_requested: 'High risk: confirm the approval with the button.',
+  confirmation_cancelled: 'Approval cancelled; the request is still pending.',
+  confirmation_expired: 'The time to confirm ran out. Tap Approve again.',
+  use_button: 'High risk: to approve, use the buttons on the request (Approve, then Confirm).',
+  already_resolved: 'That request was already resolved.',
+  expired: 'That request has expired.',
+  not_found: 'That request no longer exists.',
+  not_allowed: 'Not authorized.',
+  invalid: 'That action no longer applies to the request.',
+  delivery_failed:
+    'The answer could not be sent to Claude Code. Try again or answer at the terminal.',
+}
+
 const es: Messages = {
   pairingClaimedReply:
     'Código recibido. Confirma el emparejamiento en la terminal de tu PC para continuar.',
@@ -127,6 +190,7 @@ const es: Messages = {
       `Bot: ${v.botUsername === undefined ? 'desconocido' : `@${v.botUsername}`}`,
       `Emparejado desde: ${v.pairedSince ?? 'desconocido'}`,
       `Conexión MCP con Claude Code: ${v.sessionConnected ? 'abierta' : 'cerrada'}`,
+      `Permisos pendientes: ${v.pendingPermissions}`,
       'No es posible saber desde aquí si la sesión cargó este canal ni si Claude está ocupado.',
     ].join('\n'),
   commandStartDescription: 'comprueba que el puente está conectado',
@@ -136,6 +200,34 @@ const es: Messages = {
   onlyTextSupported: 'Por ahora solo se admite texto. Ese mensaje no se envió a Claude.',
   queued: 'Claude está ocupado: tu mensaje quedó en cola y lo verá al terminar.',
   deliveryFailed: 'No se pudo entregar el mensaje a la sesión de Claude Code.',
+
+  permissionPrompt: (v) =>
+    [
+      '🔐 Claude pide permiso',
+      `Herramienta: ${v.toolName}`,
+      v.risk === 'high' ? 'Riesgo: ALTO ⚠️ (aprobar requiere un segundo toque)' : 'Riesgo: bajo',
+      '',
+      v.description,
+      '',
+      v.inputPreview,
+      '',
+      v.risk === 'high'
+        ? `Solicitud ${v.requestId}. Sin botones, responde "no ${v.requestId}" para denegar; aprobar solo con los botones.`
+        : `Solicitud ${v.requestId}. Sin botones, responde "si ${v.requestId}" o "no ${v.requestId}".`,
+    ].join('\n'),
+  permissionAwaitingConfirmation: (seconds) =>
+    `⚠️ Riesgo alto: pulsa "Confirmar aprobación" en los próximos ${seconds} s.`,
+  permissionApproved: (d) => `✅ Aprobado por ${d.who} (${d.at})`,
+  permissionDenied: (d) => `❌ Denegado por ${d.who} (${d.at})`,
+  permissionExpired: '⌛ Venció sin respuesta. Si sigue abierto, responde en la terminal.',
+  permissionResolvedLocally: '🖥️ Respondido en la terminal.',
+  permissionButtons: {
+    approve: '✅ Aprobar',
+    deny: '❌ Denegar',
+    confirm: '⚠️ Confirmar aprobación',
+    cancel: 'Cancelar',
+  },
+  permissionFeedback: (outcome) => PERMISSION_FEEDBACK_ES[outcome],
 
   usage: USAGE_ES,
   unknownCommand: 'Comando o argumentos no válidos.',
@@ -193,6 +285,7 @@ const en: Messages = {
       `Bot: ${v.botUsername === undefined ? 'unknown' : `@${v.botUsername}`}`,
       `Paired since: ${v.pairedSince ?? 'unknown'}`,
       `MCP connection to Claude Code: ${v.sessionConnected ? 'open' : 'closed'}`,
+      `Pending permission requests: ${v.pendingPermissions}`,
       'From here it cannot be known whether the session loaded this channel or whether Claude is busy.',
     ].join('\n'),
   commandStartDescription: 'check that the bridge is connected',
@@ -202,6 +295,34 @@ const en: Messages = {
   onlyTextSupported: 'Only text is supported for now. That message was not sent to Claude.',
   queued: 'Claude is busy: your message is queued and Claude will see it when done.',
   deliveryFailed: 'The message could not be delivered to the Claude Code session.',
+
+  permissionPrompt: (v) =>
+    [
+      '🔐 Claude asks for permission',
+      `Tool: ${v.toolName}`,
+      v.risk === 'high' ? 'Risk: HIGH ⚠️ (approving needs a second tap)' : 'Risk: low',
+      '',
+      v.description,
+      '',
+      v.inputPreview,
+      '',
+      v.risk === 'high'
+        ? `Request ${v.requestId}. Without buttons, reply "no ${v.requestId}" to deny; approving needs the buttons.`
+        : `Request ${v.requestId}. Without buttons, reply "yes ${v.requestId}" or "no ${v.requestId}".`,
+    ].join('\n'),
+  permissionAwaitingConfirmation: (seconds) =>
+    `⚠️ High risk: tap "Confirm approve" within ${seconds} s.`,
+  permissionApproved: (d) => `✅ Approved by ${d.who} (${d.at})`,
+  permissionDenied: (d) => `❌ Denied by ${d.who} (${d.at})`,
+  permissionExpired: '⌛ Expired without an answer. If it is still open, answer at the terminal.',
+  permissionResolvedLocally: '🖥️ Answered at the terminal.',
+  permissionButtons: {
+    approve: '✅ Approve',
+    deny: '❌ Deny',
+    confirm: '⚠️ Confirm approve',
+    cancel: 'Cancel',
+  },
+  permissionFeedback: (outcome) => PERMISSION_FEEDBACK_EN[outcome],
 
   usage: USAGE_EN,
   unknownCommand: 'Invalid command or arguments.',

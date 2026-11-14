@@ -1,13 +1,14 @@
 import { type Api, Bot, BotError, GrammyError } from 'grammy'
 import type { Update } from 'grammy/types'
+import type { CallbackHandler } from '../../application/callbacks/InboundCallback.ts'
 import type { InboundHandler } from '../../application/pipeline/InboundStep.ts'
 import type { InboundPoller, PollingExit } from '../../application/ports/InboundPoller.ts'
 import type { Logger } from '../../application/ports/Logger.ts'
 import { describeTelegramError, isTokenRejection } from './redact.ts'
-import { toInboundMessage } from './toInboundMessage.ts'
+import { toInboundCallback, toInboundMessage } from './toInboundMessage.ts'
 
-/** Only what the pipeline uses; everything else is never delivered to us. */
-export const ALLOWED_UPDATES = ['message'] as const
+/** Only what we handle (texts and button taps); everything else is never delivered to us. */
+export const ALLOWED_UPDATES = ['message', 'callback_query'] as const
 
 export type AbortableSleep = (ms: number, signal: AbortSignal) => Promise<void>
 
@@ -46,6 +47,7 @@ export class TelegramPoller implements InboundPoller {
   readonly #options: TelegramPollerOptions
   readonly #sleep: AbortableSleep
   #handler: InboundHandler | undefined
+  #onCallback: CallbackHandler | undefined
   #abort: AbortController | undefined
   #loop: Promise<PollingExit> | undefined
   #offset = 0
@@ -63,11 +65,16 @@ export class TelegramPoller implements InboundPoller {
     this.#bot.on('message', async (ctx) => {
       await this.#handler?.(toInboundMessage(ctx.message))
     })
+    // Without a callback handler (the `pair` CLI) taps are dropped unanswered.
+    this.#bot.on('callback_query', async (ctx) => {
+      await this.#onCallback?.(toInboundCallback(ctx.callbackQuery))
+    })
   }
 
-  start(handler: InboundHandler): Promise<PollingExit> {
+  start(handler: InboundHandler, onCallback?: CallbackHandler): Promise<PollingExit> {
     if (this.#loop !== undefined) throw new Error('already polling')
     this.#handler = handler
+    this.#onCallback = onCallback
     this.#abort = new AbortController()
     this.#loop = this.#run(this.#abort.signal).finally(() => {
       this.#loop = undefined

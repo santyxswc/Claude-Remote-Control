@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from 'bun:test'
 import { ALLOWED_UPDATES, TelegramPoller } from '../../../src/adapters/telegram/TelegramPoller.ts'
+import type { InboundCallback } from '../../../src/application/callbacks/InboundCallback.ts'
 import type { InboundMessage } from '../../../src/application/pipeline/InboundMessage.ts'
 import { MemoryLogger } from '../../fakes.ts'
 import { FakeTelegramApi, PHONE_OWNER, TEST_TOKEN } from '../../fakeTelegram.ts'
@@ -61,7 +62,7 @@ test('long-polls with only the update types we use and maps messages', async () 
     timeout: 1,
     allowed_updates: [...ALLOWED_UPDATES],
   })
-  expect(ALLOWED_UPDATES).toEqual(['message'])
+  expect(ALLOWED_UPDATES).toEqual(['message', 'callback_query'])
 })
 
 test('advances the offset and confirms processed updates on stop', async () => {
@@ -166,4 +167,18 @@ test('only calls the fake API: every request goes to api.telegram.org through th
   void s.poller.start(s.handler)
   await s.api.waitForPolls(1)
   expect(s.api.urls.every((url) => url.startsWith('https://api.telegram.org/bot'))).toBe(true)
+})
+
+test('button taps go to the callback handler, not the message handler', async () => {
+  const s = setup()
+  const taps: InboundCallback[] = []
+  void s.poller.start(s.handler, async (c) => void taps.push(c))
+  s.api.tap(PHONE_OWNER, 7, 'p1:abcde:a')
+  await until(() => taps.length === 1)
+  expect(taps[0]).toMatchObject({
+    chatId: String(PHONE_OWNER.id),
+    chatKind: 'private',
+    data: 'p1:abcde:a',
+  })
+  expect(s.received).toEqual([])
 })

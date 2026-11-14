@@ -58,6 +58,26 @@ const MIGRATIONS: readonly string[] = [
     heartbeat_at INTEGER NOT NULL
   );
   `,
+  // F3: relayed permission requests. Prompts is a JSON array of {chatId, messageId}.
+  `
+  CREATE TABLE permission_requests (
+    id TEXT PRIMARY KEY CHECK (length(id) = 5 AND id NOT GLOB '*[^a-km-z]*'),
+    session TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    input_preview TEXT NOT NULL,
+    risk TEXT NOT NULL CHECK (risk IN ('low', 'high')),
+    state TEXT NOT NULL CHECK (state IN ('pending', 'awaiting_confirmation', 'approved',
+      'denied', 'resolved_locally', 'expired')),
+    created_at INTEGER NOT NULL,
+    confirmation_requested_at INTEGER,
+    decided_by TEXT,
+    decided_at INTEGER,
+    prompts TEXT NOT NULL,
+    revision INTEGER NOT NULL
+  );
+  CREATE INDEX permission_requests_by_state ON permission_requests (state, created_at);
+  `,
 ]
 
 export const SCHEMA_VERSION = MIGRATIONS.length

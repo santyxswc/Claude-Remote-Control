@@ -10,6 +10,8 @@ export interface StatusCommandDeps {
   readonly allowed: AllowedSenderStore
   /** Whether the MCP transport to Claude Code is open. */
   readonly isSessionConnected: () => boolean
+  /** Open permission requests of this session. */
+  readonly pendingPermissions: () => number
 }
 
 /**
@@ -31,6 +33,7 @@ export class StatusCommand implements ChatCommand {
         botUsername: this.deps.botUsername,
         pairedSince: paired === undefined ? undefined : new Date(paired.addedAt).toISOString(),
         sessionConnected: this.deps.isSessionConnected(),
+        pendingPermissions: this.deps.pendingPermissions(),
       }),
     )
   }

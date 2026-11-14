@@ -7,6 +7,7 @@ import { JsonBotIdentityStore } from './JsonBotIdentityStore.ts'
 import { SqliteAllowedSenderStore } from './SqliteAllowedSenderStore.ts'
 import { SqliteAuditLog } from './SqliteAuditLog.ts'
 import { SqlitePairingStore } from './SqlitePairingStore.ts'
+import { SqlitePermissionStore } from './SqlitePermissionStore.ts'
 import { SqlitePollerLock } from './SqlitePollerLock.ts'
 import { DATABASE_FILE, openDatabase } from './sqlite.ts'
 import { ensureStateDir } from './stateDir.ts'
@@ -18,6 +19,7 @@ export interface StateStores {
   readonly allowed: SqliteAllowedSenderStore
   readonly audit: SqliteAuditLog
   readonly lock: SqlitePollerLock
+  readonly permissions: SqlitePermissionStore
   readonly tokens: DotEnvTokenStore
   readonly identities: JsonBotIdentityStore
 }
@@ -34,6 +36,7 @@ export function openState(
     pairings: new SqlitePairingStore(db),
     allowed: new SqliteAllowedSenderStore(db),
     audit: new SqliteAuditLog(db),
+    permissions: new SqlitePermissionStore(db),
     lock: new SqlitePollerLock(db, { pid: process.pid, clock, isProcessAlive }),
     tokens: new DotEnvTokenStore(stateDir, env),
     identities: new JsonBotIdentityStore(stateDir),

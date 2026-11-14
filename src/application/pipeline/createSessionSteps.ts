@@ -9,6 +9,7 @@ import type { HandleInboundMessage } from '../use-cases/HandleInboundMessage.ts'
 import { CommandRouterStep } from './CommandRouterStep.ts'
 import { ForwardToSessionStep } from './ForwardToSessionStep.ts'
 import type { InboundStep } from './InboundStep.ts'
+import type { PermissionVerdictStep } from './PermissionVerdictStep.ts'
 import { RateLimitStep } from './RateLimitStep.ts'
 import { UnsupportedContentStep } from './UnsupportedContentStep.ts'
 
@@ -22,11 +23,14 @@ export interface SessionStepsDeps {
   readonly forward: HandleInboundMessage
   readonly botUsername: string | undefined
   readonly limiter?: TokenBucket
+  /** Text verdicts for permission prompts; absent when the relay is off. */
+  readonly permissionVerdicts?: PermissionVerdictStep
 }
 
 /**
  * The tail of the chain for the channel process, after authentication:
- * rate limit, text only, commands, then delivery to the session.
+ * rate limit, text only, permission verdicts, commands, then delivery to the
+ * session.
  */
 export function createSessionSteps(deps: SessionStepsDeps): InboundStep[] {
   return [
@@ -39,6 +43,7 @@ export function createSessionSteps(deps: SessionStepsDeps): InboundStep[] {
       slowDown: deps.messages.slowDown,
     }),
     new UnsupportedContentStep(deps.chat, deps.messages.onlyTextSupported, deps.clock, deps.logger),
+    ...(deps.permissionVerdicts === undefined ? [] : [deps.permissionVerdicts]),
     new CommandRouterStep(deps.commands, deps.chat, deps.logger, deps.botUsername),
     new ForwardToSessionStep(deps.forward),
   ]

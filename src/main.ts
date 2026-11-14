@@ -19,12 +19,11 @@ import { openState, type StateStores } from './adapters/storage/openState.ts'
 import { defaultStateDir } from './adapters/storage/stateDir.ts'
 import { DotEnvProjectSecrets } from './adapters/system/DotEnvProjectSecrets.ts'
 import { SystemClock } from './adapters/system/SystemClock.ts'
-import type { PollingSupervisor } from './adapters/telegram/PollingSupervisor.ts'
 import { LOCALE_ENV, messagesFor, parseLocale } from './application/i18n/messages.ts'
 import type { Logger } from './application/ports/Logger.ts'
 import { buildOutbound } from './composition/outbound.ts'
 import { buildSendReply } from './composition/replies.ts'
-import { startTelegramInbound } from './composition/telegramInbound.ts'
+import { startTelegramInbound, type TelegramInbound } from './composition/telegramInbound.ts'
 import { selectSecretValues } from './domain/redaction/secretValues.ts'
 
 const SERVER_NAME = 'telegram-bridge'
@@ -74,10 +73,12 @@ const channel = new McpChannelServer({
   version: packageJson.version,
   reply: (request) => sendReply.execute(request),
   logger,
+  // Permission prompts only where senders are authenticated: a token and the allowlist.
+  permissionRelay: state !== undefined && token !== undefined,
 })
 
 let devInbound: DevHttpInbound | undefined
-let polling: PollingSupervisor | undefined
+let polling: TelegramInbound | undefined
 let shuttingDown = false
 
 async function shutdown(reason: string): Promise<void> {
