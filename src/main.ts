@@ -30,6 +30,8 @@ import { openState, type StateStores } from './adapters/storage/openState.ts'
 import { defaultStateDir, resolveClaudeConfigDir } from './adapters/storage/stateDir.ts'
 import { DotEnvProjectSecrets } from './adapters/system/DotEnvProjectSecrets.ts'
 import { SystemClock } from './adapters/system/SystemClock.ts'
+import { createTranscriber } from './adapters/voice/createTranscriber.ts'
+import { resolveVoiceSetup, WHISPER_LANGUAGE_ENV } from './adapters/voice/voiceSetup.ts'
 import { LOCALE_ENV, messagesFor, parseLocale } from './application/i18n/messages.ts'
 import type { HookEventSource } from './application/ports/HookEventSource.ts'
 import type { Logger } from './application/ports/Logger.ts'
@@ -186,6 +188,23 @@ async function shutdown(reason: string): Promise<void> {
   process.exit(0)
 }
 
+/**
+ * F13: whisper.cpp and ffmpeg, resolved once (absolute overrides, else PATH;
+ * never the project directory). Off until a model is configured.
+ */
+function voiceTranscriber() {
+  const setup = resolveVoiceSetup({ platform: process.platform, env, probe: systemProbe })
+  if (setup.ok) {
+    if (setup.languageIgnored) {
+      logger.warn(`${WHISPER_LANGUAGE_ENV} is not a language code such as es or en; using auto`)
+    }
+    logger.info('voice notes', { enabled: true, language: setup.language })
+  } else {
+    logger.info('voice notes', { enabled: false, reason: setup.reason })
+  }
+  return createTranscriber(setup, { env, run: spawnCapturing, probe: systemProbe })
+}
+
 /** Without the hook listener there are no notices; everything else keeps working. */
 function hookListenerOrNothing(dir: string): HookEventSource | undefined {
   try {
@@ -251,6 +270,7 @@ if (state !== undefined && token === undefined) {
       }),
       ...(screenshots === undefined ? {} : { screenshots }),
       attachments: { stateDir, maxBytes: upload.bytes },
+      voice: { transcriber: voiceTranscriber() },
       skillFiles: new DiskSkillFiles({
         projectDir: knownProject,
         userSkillsDir: configDir === undefined ? undefined : join(configDir, 'skills'),

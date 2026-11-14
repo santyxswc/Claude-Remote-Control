@@ -114,14 +114,23 @@ export class HandleInboundMessage {
 /**
  * Extra attributes of the channel tag: why the text reaches the session.
  * Choices: the answer to an `ask_choice` (`choice_id`). Memory: how the owner answered a
- * `propose_memory` (`proposal_id`). Attachments: the local file.
+ * `propose_memory` (`proposal_id`). Attachments: the local file. Voice: a
+ * transcript the owner confirmed (`transcript_id`), also when it answers a choice.
  */
 function contextMeta(context: ForwardContext | undefined): Record<string, string> {
   switch (context?.kind) {
     case undefined:
       return {}
     case 'choice':
-      return { kind: 'choice', choice_id: context.choiceId }
+      return {
+        kind: 'choice',
+        choice_id: context.choiceId,
+        ...(context.transcriptId === undefined
+          ? {}
+          : { source: 'voice', transcript_id: context.transcriptId }),
+      }
+    case 'voice':
+      return { kind: 'voice', transcript_id: context.transcriptId }
     case 'memory':
       return { kind: 'memory', proposal_id: context.proposalId }
     case 'attachment':

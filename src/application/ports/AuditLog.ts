@@ -50,6 +50,11 @@ export type AuditEvent =
   | 'memory.rejected'
   | 'memory.write_failed'
   | 'memory.expired'
+  | 'voice.refused'
+  | 'voice.transcribed'
+  | 'voice.sent'
+  | 'voice.discarded'
+  | 'voice.expired'
 
 /** Values that are safe to persist: never tokens, codes or message text. */
 export type AuditDetails = Readonly<Record<string, string | number | boolean | null>>

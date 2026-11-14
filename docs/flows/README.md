@@ -24,8 +24,9 @@ or a live Claude Code session yet; the checklist below is how that happens.
 | [F10](F10.md) | Incoming images and files | Implemented. Automated acceptance (`tests/acceptance/F10.test.ts`) with a fake `getFile` and download. Live: real photo sizes, albums, `getFile` on real files pending |
 | [F11](F11.md) | Charts (`send_chart`) | Implemented. Automated acceptance (`tests/acceptance/F11.test.ts`) with the real renderer process; adapter tests for no network, no files, no code and the kill. Live: legibility on the phone and render time pending |
 | [F12](F12.md) | Session summary and memory (`/wrap`) | Implemented. Automated acceptance (`tests/acceptance/F12.test.ts`) on a temp project. Live: how Claude follows `/wrap` and the `kind="memory"` outcome pending |
+| [F13](F13.md) | Voice notes (local whisper.cpp, confirm before sending) | Implemented. Automated acceptance (`tests/acceptance/F13.test.ts`) with stub `ffmpeg` and `whisper-cli`. Live: real transcription on each OS, timings, Windows binaries pending |
 
-The other later flows (F13 to F15) are in [../roadmap.md](../roadmap.md).
+The other later flows (F14 to F15) are in [../roadmap.md](../roadmap.md).
 
 Where a flow doc and the code differ, the code wins. Known cases are listed in the architecture
 and roadmap notes; for instance F2's command list (`/start`, `/help`, `/status`) has since grown
@@ -276,7 +277,8 @@ Source: [F10](F10.md), manual verification.
   as separate messages in one `getUpdates` batch.
 - [ ] **[All]** `TELEGRAM_BRIDGE_MAX_UPLOAD_MB=1` and a 2 MB file: refused with the limit. Also try a
   file over 20 MB: refused before any download.
-- [ ] **[All]** Braked: a photo is not downloaded. A voice note gets the "only text, photos and files" notice.
+- [ ] **[All]** Braked: a photo is not downloaded. A voice note gets the brake notice and is not
+  downloaded either (F13, Part 14).
 - [ ] **[All]** `/status` shows the inbox. A new session removes the old session's inbox.
 - [ ] **[All]** The bot token appears nowhere in stderr (`claude --debug`) or the audit.
 
@@ -341,10 +343,31 @@ Source: [F12](F12.md), manual verification. In a project with a `CLAUDE.md` unde
 - [ ] **[All]** `/stop`, then Approve a pending proposal: written, and the toast says Claude was not
   told. `/wrap` while braked sends nothing.
 
-### Part 14: Wrap-up
+### Part 14: Voice notes (F13)
+
+Source: [F13](F13.md), setup and manual verification. Needs `whisper-cli`, `ffmpeg` and a
+multilingual ggml model (`base` or `small`) installed by you; the bridge installs nothing.
+
+- [ ] **[All]** Without `TELEGRAM_BRIDGE_WHISPER_MODEL`, send a voice note: the help reply names the
+  setting and nothing is downloaded.
+- [ ] **[All]** Set the model (absolute path) and restart. A 5 s note in Spanish: the transcript with
+  Send and Discard. **Record the time to the prompt, the model and the quality.**
+- [ ] **[All]** Send: Claude gets the text (`kind="voice"`). Discard another: nothing reaches Claude.
+  A second tap only gets a toast.
+- [ ] **[All]** Dictate something whisper writes as "/stop": nothing is executed and the brake stays
+  off. **Record whether Claude Code treats the `/name` as a slash command.**
+- [ ] **[All]** `/stop`, then Send: the brake toast. `/resume`, then Send: delivered.
+- [ ] **[All]** A note over 3 minutes: refused before download. A prompt left 10 minutes: "Expired".
+- [ ] **[All]** `<stateDir>/voice` is empty after each note; audit `voice.*` rows have counts only, no
+  words.
+- [ ] **[Linux]** Arch: `pacman -S whisper-cpp ffmpeg`, no overrides needed. Record the version.
+- [ ] **[Windows]** With `TELEGRAM_BRIDGE_WHISPER` and `TELEGRAM_BRIDGE_FFMPEG` set to the `.exe`
+  paths. **Record the release asset used and whether extra DLLs were needed.**
+
+### Part 15: Wrap-up
 
 - [ ] **[All]** Record every "needs live verification" outcome in the ADRs: 0005 (findings), 0003
-  (`onFailure` on a Claude Code older than 2.1.295 ignoring the unknown key), 0009 (plugin items), 0011 (skills from the chat, albums), 0012 (git instructions), 0013 (silent status), 0014 (charts), 0015 (`/wrap`), and
+  (`onFailure` on a Claude Code older than 2.1.295 ignoring the unknown key), 0009 (plugin items), 0011 (skills from the chat, albums), 0012 (git instructions), 0013 (silent status), 0014 (charts), 0015 (`/wrap`), 0016 (voice notes), and
   the open points of each flow doc.
 - [ ] **[All]** Remove the throwaway directory, unset the variables, and repeat `init` and `pair` for real.
 - [ ] **[All]** Update the README: the exact install commands for the plugin route, the minimum Claude Code

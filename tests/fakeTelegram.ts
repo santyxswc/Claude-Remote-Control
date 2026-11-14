@@ -167,6 +167,23 @@ export class FakeTelegramApi {
     })
   }
 
+  /** Queues a private voice note (Ogg/Opus as Telegram records it). */
+  sendVoice(from: From, voice: { fileId: string; duration: number; size?: number }): number {
+    return this.#sendMedia(
+      from,
+      {},
+      {
+        voice: {
+          file_id: voice.fileId,
+          file_unique_id: `u-${voice.fileId}`,
+          duration: voice.duration,
+          mime_type: 'audio/ogg',
+          ...(voice.size === undefined ? {} : { file_size: voice.size }),
+        },
+      },
+    )
+  }
+
   #sendMedia(
     from: From,
     options: { caption?: string; mediaGroupId?: string },

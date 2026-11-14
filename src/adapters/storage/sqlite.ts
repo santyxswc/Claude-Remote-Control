@@ -127,6 +127,26 @@ const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX memory_proposals_by_state ON memory_proposals (state, created_at);
   `,
+  // F13: voice note transcripts waiting for Send or Discard. The text stays
+  // only while the transcript is pending; the audio is never stored.
+  `
+  CREATE TABLE voice_transcripts (
+    id TEXT PRIMARY KEY CHECK (length(id) = 10 AND id NOT GLOB '*[^a-z2-7]*'),
+    session TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    length INTEGER NOT NULL CHECK (length >= 1),
+    duration_seconds INTEGER NOT NULL CHECK (duration_seconds >= 0),
+    state TEXT NOT NULL
+      CHECK (state IN ('pending', 'sent', 'discarded', 'expired', 'cancelled')),
+    created_at INTEGER NOT NULL,
+    resolved_by TEXT,
+    closed_at INTEGER,
+    prompt TEXT,
+    revision INTEGER NOT NULL
+  );
+  CREATE INDEX voice_transcripts_by_state ON voice_transcripts (state, created_at);
+  `,
 ]
 
 export const SCHEMA_VERSION = MIGRATIONS.length

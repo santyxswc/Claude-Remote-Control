@@ -8,6 +8,7 @@ import { sanitizeDisplayText, sanitizeUsername } from '../../domain/displayText.
 import type { DiffPathProblem } from '../../domain/git/diffPathFilter.ts'
 import type { PermissionOutcome } from '../permissions/PermissionOutcome.ts'
 import type { CaptureUnavailable } from '../ports/ScreenCapturer.ts'
+import type { TranscriberUnavailable } from '../ports/Transcriber.ts'
 
 export type Locale = 'es' | 'en'
 
@@ -177,6 +178,59 @@ export interface MemorySessionView {
   readonly lines: number
   readonly file: string
 }
+
+/** Why a voice note produced no transcript to send (F13). */
+export type VoiceRefusalReason =
+  /** Longer than the cap, or no duration declared. */
+  | 'too_long'
+  | 'too_large'
+  | 'empty'
+  /** The content is not an Ogg file. */
+  | 'not_ogg'
+  /** Too many voice notes waiting already. */
+  | 'busy'
+  | 'download_failed'
+  | 'conversion_failed'
+  | 'transcription_failed'
+  | 'timeout'
+  | 'output_too_large'
+  /** The transcript was empty. */
+  | 'nothing_heard'
+  /** The transcript does not fit one message. */
+  | 'text_too_long'
+  /** Redaction would have changed the transcript. */
+  | 'contains_secret'
+  /** The prompt could not be sent. */
+  | 'not_shown'
+
+export interface VoiceRefusalView {
+  readonly reason: VoiceRefusalReason
+  readonly maxSeconds: number
+  readonly maxMegabytes: number
+}
+
+/** The transcript as offered with Send and Discard (F13). */
+export interface VoicePromptView {
+  readonly text: string
+  /** The note's declared duration. */
+  readonly seconds: number
+}
+
+/** What a tap on a voice transcript did (F13). */
+export type VoiceTapOutcome =
+  | 'sent'
+  | 'discarded'
+  | 'braked'
+  | 'already_resolved'
+  | 'expired'
+  | 'not_found'
+  | 'not_allowed'
+
+/** How a voice transcript ended, for the line under the text. */
+export type VoiceStatusView =
+  | { readonly status: 'sent' | 'discarded'; readonly who: string; readonly at: string }
+  | { readonly status: 'expired' }
+  | { readonly status: 'cancelled' }
 
 /** Why an incoming file was not passed to Claude. */
 export interface AttachmentRefusalView {
@@ -371,6 +425,15 @@ export interface Messages {
   readonly memoryFeedback: (outcome: MemoryTapOutcome) => string
   /** What the session reads after a tap; fixed text, ids and counts only. */
   readonly memorySessionOutcome: (view: MemorySessionView) => string
+
+  // Bot: voice notes (F13)
+  /** Voice notes cannot be transcribed here: how to enable it. Nothing was downloaded. */
+  readonly voiceUnavailable: (reason: TranscriberUnavailable) => string
+  readonly voiceRefused: (view: VoiceRefusalView) => string
+  readonly voicePrompt: (view: VoicePromptView) => string
+  readonly voiceButtons: { readonly send: string; readonly discard: string }
+  readonly voiceStatus: (view: VoiceStatusView) => string
+  readonly voiceFeedback: (outcome: VoiceTapOutcome) => string
 
   // Bot: pinned status (F9)
   readonly commandPinDescription: string
@@ -826,6 +889,109 @@ const MEMORY_NOTICE_EN: Readonly<Record<MemoryNotice, string>> = {
   not_delivered: ' Claude could not be told.',
 }
 
+const VOICE_SETUP_ES = 'Guía: docs/flows/F13.md. La nota no se descargó.'
+const VOICE_SETUP_EN = 'Guide: docs/flows/F13.md. The note was not downloaded.'
+
+const VOICE_UNAVAILABLE_ES: Readonly<Record<TranscriberUnavailable, string>> = {
+  not_configured: `🎙️ Las notas de voz están desactivadas. Para activarlas instala whisper.cpp (whisper-cli) y ffmpeg en el PC, descarga un modelo ggml, define TELEGRAM_BRIDGE_WHISPER_MODEL con su ruta absoluta y reinicia la sesión. Todo se transcribe en el PC; nada sale a internet. ${VOICE_SETUP_ES}`,
+  model_missing: `🎙️ Notas de voz: TELEGRAM_BRIDGE_WHISPER_MODEL no es la ruta absoluta de un archivo que exista. Corrígela y reinicia la sesión. ${VOICE_SETUP_ES}`,
+  whisper_missing: `🎙️ Notas de voz: no se encontró whisper-cli. Instala whisper.cpp o define TELEGRAM_BRIDGE_WHISPER con la ruta absoluta del ejecutable, y reinicia la sesión. ${VOICE_SETUP_ES}`,
+  ffmpeg_missing: `🎙️ Notas de voz: no se encontró ffmpeg, que convierte la nota (Opus) al WAV que lee whisper.cpp. Instálalo o define TELEGRAM_BRIDGE_FFMPEG con la ruta absoluta del ejecutable, y reinicia la sesión. ${VOICE_SETUP_ES}`,
+}
+
+const VOICE_UNAVAILABLE_EN: Readonly<Record<TranscriberUnavailable, string>> = {
+  not_configured: `🎙️ Voice notes are off. To turn them on, install whisper.cpp (whisper-cli) and ffmpeg on the PC, download a ggml model, set TELEGRAM_BRIDGE_WHISPER_MODEL to its absolute path and restart the session. Everything is transcribed on the PC; nothing goes online. ${VOICE_SETUP_EN}`,
+  model_missing: `🎙️ Voice notes: TELEGRAM_BRIDGE_WHISPER_MODEL is not the absolute path of an existing file. Fix it and restart the session. ${VOICE_SETUP_EN}`,
+  whisper_missing: `🎙️ Voice notes: whisper-cli was not found. Install whisper.cpp or set TELEGRAM_BRIDGE_WHISPER to the absolute path of the executable, and restart the session. ${VOICE_SETUP_EN}`,
+  ffmpeg_missing: `🎙️ Voice notes: ffmpeg was not found; it converts the note (Opus) to the WAV whisper.cpp reads. Install it or set TELEGRAM_BRIDGE_FFMPEG to the absolute path of the executable, and restart the session. ${VOICE_SETUP_EN}`,
+}
+
+function voiceRefusedEs(v: VoiceRefusalView): string {
+  switch (v.reason) {
+    case 'too_long':
+      return `🎙️ La nota de voz dura más de ${v.maxSeconds} segundos (o no dice cuánto dura): no se descargó. Envía notas más cortas.`
+    case 'too_large':
+      return `🎙️ La nota de voz pesa más de ${v.maxMegabytes} MB: no se descargó.`
+    case 'empty':
+      return '🎙️ La nota de voz está vacía.'
+    case 'not_ogg':
+      return '🎙️ Ese archivo no es una nota de voz de Telegram (OGG): se descartó sin transcribir.'
+    case 'busy':
+      return '🎙️ Ya hay notas de voz en cola. Espera a que terminen y vuelve a enviarla.'
+    case 'download_failed':
+      return '🎙️ No se pudo descargar la nota de voz. Inténtalo de nuevo.'
+    case 'conversion_failed':
+      return '🎙️ ffmpeg no pudo leer la nota de voz. Se borró sin transcribir.'
+    case 'transcription_failed':
+      return '🎙️ whisper.cpp no pudo transcribir la nota. Revisa el modelo y el log. El audio se borró.'
+    case 'timeout':
+      return '🎙️ La transcripción tardó demasiado y se detuvo. Prueba un modelo más pequeño. El audio se borró.'
+    case 'output_too_large':
+      return '🎙️ La transcripción produjo demasiado texto y se descartó. El audio se borró.'
+    case 'nothing_heard':
+      return '🎙️ No se entendió nada en la nota de voz. El audio se borró.'
+    case 'text_too_long':
+      return '🎙️ La transcripción no cabe en un mensaje, así que no se puede mostrar entera para confirmarla. Se descartó: envía notas más cortas.'
+    case 'contains_secret':
+      return '🎙️ La transcripción contiene algo parecido a un secreto. Como el chat lo censuraría, no podrías ver exactamente lo que se enviaría: se descartó. Escríbelo en el PC.'
+    case 'not_shown':
+      return '🎙️ No se pudo mostrar la transcripción. Se descartó.'
+  }
+}
+
+function voiceRefusedEn(v: VoiceRefusalView): string {
+  switch (v.reason) {
+    case 'too_long':
+      return `🎙️ The voice note is longer than ${v.maxSeconds} seconds (or does not say how long it is): it was not downloaded. Send shorter notes.`
+    case 'too_large':
+      return `🎙️ The voice note is larger than ${v.maxMegabytes} MB: it was not downloaded.`
+    case 'empty':
+      return '🎙️ The voice note is empty.'
+    case 'not_ogg':
+      return '🎙️ That file is not a Telegram voice note (OGG): it was discarded without transcribing.'
+    case 'busy':
+      return '🎙️ Voice notes are already queued. Wait for them to finish and send it again.'
+    case 'download_failed':
+      return '🎙️ The voice note could not be downloaded. Try again.'
+    case 'conversion_failed':
+      return '🎙️ ffmpeg could not read the voice note. It was deleted without transcribing.'
+    case 'transcription_failed':
+      return '🎙️ whisper.cpp could not transcribe the note. Check the model and the log. The audio was deleted.'
+    case 'timeout':
+      return '🎙️ The transcription took too long and was stopped. Try a smaller model. The audio was deleted.'
+    case 'output_too_large':
+      return '🎙️ The transcription produced too much text and was discarded. The audio was deleted.'
+    case 'nothing_heard':
+      return '🎙️ Nothing could be made out in the voice note. The audio was deleted.'
+    case 'text_too_long':
+      return '🎙️ The transcript does not fit one message, so it cannot be shown whole for you to confirm. It was discarded: send shorter notes.'
+    case 'contains_secret':
+      return '🎙️ The transcript contains something that looks like a secret. The chat would redact it, so you could not see exactly what would be sent: it was discarded. Type it on the PC.'
+    case 'not_shown':
+      return '🎙️ The transcript could not be shown. It was discarded.'
+  }
+}
+
+const VOICE_FEEDBACK_ES: Readonly<Record<VoiceTapOutcome, string>> = {
+  sent: 'Enviado a Claude.',
+  discarded: 'Descartado: no se envió nada.',
+  braked: 'El freno está activo: no se envía nada. Envía /resume y vuelve a tocar Enviar.',
+  already_resolved: 'Esa transcripción ya se resolvió.',
+  expired: 'Esa transcripción ya venció.',
+  not_found: 'Esa transcripción ya no existe.',
+  not_allowed: 'No autorizado.',
+}
+
+const VOICE_FEEDBACK_EN: Readonly<Record<VoiceTapOutcome, string>> = {
+  sent: 'Sent to Claude.',
+  discarded: 'Discarded: nothing was sent.',
+  braked: 'The brake is engaged: nothing is sent. Send /resume, then tap Send again.',
+  already_resolved: 'That transcript was already resolved.',
+  expired: 'That transcript has expired.',
+  not_found: 'That transcript no longer exists.',
+  not_allowed: 'Not authorized.',
+}
+
 /** The proposed lines as the file will hold them, one bullet each. */
 function memoryLines(lines: readonly string[]): string {
   return lines.map((line) => `- ${line}`).join('\n')
@@ -1149,6 +1315,31 @@ const es: Messages = {
     v.outcome === 'approved'
       ? `El dueño aprobó la propuesta de memoria ${v.proposalId}: sus ${v.lines} líneas se agregaron a ${v.file} bajo "## Session notes". No las vuelvas a escribir.`
       : `El dueño rechazó la propuesta de memoria ${v.proposalId}: no se escribió nada en ${v.file}. No la escribas por tu cuenta.`,
+
+  voiceUnavailable: (reason) => VOICE_UNAVAILABLE_ES[reason],
+  voiceRefused: voiceRefusedEs,
+  voicePrompt: (v) =>
+    lines(
+      `🎙️ Transcripción de tu nota de voz (${v.seconds} s):`,
+      '',
+      v.text,
+      '',
+      'Enviar pasa exactamente este texto a Claude, como si lo hubieras escrito. Revisa que se entendió bien. Descartar no envía nada.',
+    ),
+  voiceButtons: { send: '✅ Enviar', discard: '🗑️ Descartar' },
+  voiceStatus: (v) => {
+    switch (v.status) {
+      case 'sent':
+        return `✅ Enviado a Claude por ${v.who} (${v.at}).`
+      case 'discarded':
+        return `🗑️ Descartado por ${v.who} (${v.at}): no se envió nada.`
+      case 'expired':
+        return '⌛ Venció sin respuesta: no se envió nada.'
+      case 'cancelled':
+        return '🚫 Cancelada: la sesión que la transcribió ya terminó. No se envió nada.'
+    }
+  },
+  voiceFeedback: (outcome) => VOICE_FEEDBACK_ES[outcome],
 
   commandPinDescription: 'fija un mensaje de estado que sigue a la sesión',
   commandUnpinDescription: 'quita el mensaje de estado fijado',
@@ -1514,6 +1705,31 @@ const en: Messages = {
     v.outcome === 'approved'
       ? `The owner approved memory proposal ${v.proposalId}: its ${v.lines} lines were added to ${v.file} under "## Session notes". Do not write them again.`
       : `The owner rejected memory proposal ${v.proposalId}: nothing was written to ${v.file}. Do not write it yourself.`,
+
+  voiceUnavailable: (reason) => VOICE_UNAVAILABLE_EN[reason],
+  voiceRefused: voiceRefusedEn,
+  voicePrompt: (v) =>
+    lines(
+      `🎙️ Transcript of your voice note (${v.seconds} s):`,
+      '',
+      v.text,
+      '',
+      'Send passes exactly this text to Claude, as if you had typed it. Check it was understood correctly. Discard sends nothing.',
+    ),
+  voiceButtons: { send: '✅ Send', discard: '🗑️ Discard' },
+  voiceStatus: (v) => {
+    switch (v.status) {
+      case 'sent':
+        return `✅ Sent to Claude by ${v.who} (${v.at}).`
+      case 'discarded':
+        return `🗑️ Discarded by ${v.who} (${v.at}): nothing was sent.`
+      case 'expired':
+        return '⌛ Expired without an answer: nothing was sent.'
+      case 'cancelled':
+        return '🚫 Cancelled: the session that transcribed it has ended. Nothing was sent.'
+    }
+  },
+  voiceFeedback: (outcome) => VOICE_FEEDBACK_EN[outcome],
 
   commandPinDescription: 'pins a status message that follows the session',
   commandUnpinDescription: 'removes the pinned status message',

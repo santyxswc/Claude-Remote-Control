@@ -89,6 +89,25 @@ export class PromptRedactedError extends ApplicationError {
   }
 }
 
+/** Why a voice note could not be transcribed (F13). */
+export type TranscriptionFailure =
+  /** ffmpeg could not read the note or write the WAV. */
+  | 'conversion_failed'
+  /** whisper.cpp exited with an error or wrote no transcript. */
+  | 'transcription_failed'
+  /** A program ran past its deadline and was killed. */
+  | 'timeout'
+  /** A program wrote more than the bridge reads. */
+  | 'output_too_large'
+  | 'cancelled'
+
+/** The transcriber failed. Never carries the transcript or the audio. */
+export class TranscriptionError extends ApplicationError {
+  constructor(readonly reason: TranscriptionFailure) {
+    super(`The voice note could not be transcribed (${reason})`)
+  }
+}
+
 /** Why a file in the project could not be written (F12). Never carries file contents. */
 export type ProjectFileProblem =
   | 'outside_project'

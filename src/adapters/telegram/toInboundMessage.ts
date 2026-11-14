@@ -27,12 +27,24 @@ export function toInboundMessage(message: Message): InboundMessage {
       ? {}
       : { caption: message.caption }),
     ...(message.media_group_id === undefined ? {} : { mediaGroupId: message.media_group_id }),
+    ...(message.voice === undefined
+      ? {}
+      : {
+          // F13: only `voice` (a recorded note, Opus in Ogg). `audio` files and
+          // `video_note`s stay unsupported.
+          voice: {
+            fileId: message.voice.file_id,
+            duration: message.voice.duration,
+            size: message.voice.file_size,
+          },
+        }),
   }
 }
 
 /**
- * Photos and general files only (F10); voice, video, stickers... stay
- * unsupported. Sizes and names are Telegram's claims, checked later.
+ * Photos and general files only (F10); voice notes have their own field
+ * (F13); video, stickers... stay unsupported. Sizes and names are Telegram's
+ * claims, checked later.
  */
 function toAttachment(message: Message): InboundAttachment | undefined {
   if (message.photo !== undefined && message.photo.length > 0) {

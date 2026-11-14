@@ -13,14 +13,29 @@ export type InboundAttachment =
       readonly size: number | undefined
     }
 
+/** A voice note (F13). Every field is the platform's claim, untrusted. */
+export interface InboundVoice {
+  readonly fileId: string
+  /** Seconds, "as defined by the sender". */
+  readonly duration: number | undefined
+  readonly size: number | undefined
+}
+
 /**
  * Why a message reaches the session, beyond "the owner typed it". Set by
  * steps and use cases of the core, never by platform adapters; it becomes
  * extra channel meta.
  */
 export type ForwardContext =
-  | { readonly kind: 'choice'; readonly choiceId: string }
+  | {
+      readonly kind: 'choice'
+      readonly choiceId: string
+      /** Set when the typed answer was a confirmed voice transcript (F13). */
+      readonly transcriptId?: string
+    }
   | { readonly kind: 'memory'; readonly proposalId: string }
+  /** A voice transcript the owner confirmed with Send (F13). */
+  | { readonly kind: 'voice'; readonly transcriptId: string }
   | {
       readonly kind: 'attachment'
       readonly path: string
@@ -47,5 +62,7 @@ export interface InboundMessage {
   readonly caption?: string
   /** Set when the message is part of an album (sent as separate messages). */
   readonly mediaGroupId?: string
+  /** A voice note (F13); `text` is undefined. */
+  readonly voice?: InboundVoice
   readonly forwardContext?: ForwardContext
 }

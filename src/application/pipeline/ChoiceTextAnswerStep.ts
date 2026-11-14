@@ -8,16 +8,21 @@ import type { InboundHandler, InboundStep } from './InboundStep.ts'
  * other message, only tagged with the choice it answers. Commands ran
  * earlier, so `/stop` is never taken for an answer; while braked nothing
  * gets here and the choice keeps waiting.
+ *
+ * A voice transcript the owner confirmed with Send (F13) counts as typed
+ * text here: the owner read it and chose to send it. It keeps its
+ * transcript id in the meta.
  */
 export class ChoiceTextAnswerStep implements InboundStep {
   constructor(private readonly answer: Pick<AnswerChoiceWithText, 'execute'>) {}
 
   async handle(message: InboundMessage, next: InboundHandler): Promise<void> {
     const { sender } = message
+    const context = message.forwardContext
     if (
       message.text === undefined ||
       sender === undefined ||
-      message.forwardContext !== undefined
+      (context !== undefined && context.kind !== 'voice')
     ) {
       await next(message)
       return
@@ -26,7 +31,14 @@ export class ChoiceTextAnswerStep implements InboundStep {
     await next(
       choiceId === undefined
         ? message
-        : { ...message, forwardContext: { kind: 'choice', choiceId } },
+        : {
+            ...message,
+            forwardContext: {
+              kind: 'choice',
+              choiceId,
+              ...(context === undefined ? {} : { transcriptId: context.transcriptId }),
+            },
+          },
     )
   }
 }
