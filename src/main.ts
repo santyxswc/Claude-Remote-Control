@@ -20,7 +20,9 @@ import { defaultStateDir } from './adapters/storage/stateDir.ts'
 import { DotEnvProjectSecrets } from './adapters/system/DotEnvProjectSecrets.ts'
 import { SystemClock } from './adapters/system/SystemClock.ts'
 import { LOCALE_ENV, messagesFor, parseLocale } from './application/i18n/messages.ts'
+import type { HookEventSource } from './application/ports/HookEventSource.ts'
 import type { Logger } from './application/ports/Logger.ts'
+import { createHookIpcServer, createSessionTracking } from './composition/hooks.ts'
 import { buildOutbound } from './composition/outbound.ts'
 import { buildSendReply } from './composition/replies.ts'
 import { startTelegramInbound, type TelegramInbound } from './composition/telegramInbound.ts'
@@ -60,12 +62,14 @@ logger = new RedactingLogger(logger, [
   ...selectSecretValues(literalSecrets),
 ])
 const outbound = buildOutbound({ token, dev: devReplies, literalSecrets })
+const tracking = createSessionTracking(clock)
 const sendReply = buildSendReply({
   state,
   chat: outbound,
   extraChatIds: devReplies === undefined ? [] : [DEV_CHAT_ID],
   clock,
   logger,
+  onSent: () => tracking.policy.replied(clock.now()),
 })
 
 const channel = new McpChannelServer({
@@ -94,6 +98,16 @@ async function shutdown(reason: string): Promise<void> {
   process.exit(0)
 }
 
+/** Without the hook listener there are no notices; everything else keeps working. */
+function hookListenerOrNothing(): HookEventSource | undefined {
+  try {
+    return createHookIpcServer(stateDir, logger)
+  } catch (error) {
+    logger.error('the hook listener cannot be set up; notices are off', { error })
+    return undefined
+  }
+}
+
 channel.onClose(() => void shutdown('transport closed'))
 // Claude Code closing our stdin is the reliable "session ended" signal on every OS.
 process.stdin.on('end', () => void shutdown('stdin ended'))
@@ -116,6 +130,8 @@ if (state !== undefined && token === undefined) {
       messages,
       clock,
       logger,
+      tracking,
+      hooks: hookListenerOrNothing(),
     })
   } catch (error) {
     logger.error('telegram setup failed; serving MCP without it', { error })

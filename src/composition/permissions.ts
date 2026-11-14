@@ -45,6 +45,8 @@ export interface PermissionWiring {
   readonly verdictStep: PermissionVerdictStep
   /** Open requests of this process, for `/status`. */
   readonly pendingCount: () => number
+  /** When this process last relayed a still-open request that reached a chat, for F4. */
+  readonly lastRelayedAt: () => number | undefined
 }
 
 export function buildPermissions(deps: PermissionWiringDeps): PermissionWiring {
@@ -75,5 +77,11 @@ export function buildPermissions(deps: PermissionWiringDeps): PermissionWiring {
     }),
     verdictStep: new PermissionVerdictStep(resolve, deps.outbound, messages, logger),
     pendingCount: () => store.listOpen().filter((request) => request.session === session).length,
+    lastRelayedAt: () => {
+      const relayed = store
+        .listOpen()
+        .filter((request) => request.session === session && request.prompts.length > 0)
+      return relayed.at(-1)?.createdAt
+    },
   }
 }

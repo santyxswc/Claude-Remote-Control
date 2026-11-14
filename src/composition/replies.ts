@@ -26,6 +26,8 @@ export interface ReplyWiring {
   readonly extraChatIds: readonly string[]
   readonly clock: Clock
   readonly logger: Logger
+  /** Observer of delivered replies (F4's notice debounce). */
+  readonly onSent?: () => void
 }
 
 /** The `reply` tool's use case: the target chat is checked against the live allowlist. */
@@ -37,5 +39,6 @@ export function buildSendReply(wiring: ReplyWiring): SendReply {
     audit: wiring.state?.audit ?? NO_AUDIT,
     clock: wiring.clock,
     logger: wiring.logger,
+    ...(wiring.onSent === undefined ? {} : { onSent: wiring.onSent }),
   })
 }

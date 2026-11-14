@@ -112,3 +112,32 @@ describe('HandleInboundMessage', () => {
     expect(audit.entries).toEqual([])
   })
 })
+
+describe('HandleInboundMessage observer', () => {
+  test('onForwarded fires after the busy check, and not when delivery failed', async () => {
+    const activity = new FakeSessionActivity('idle')
+    const { channel, chat, audit, clock, logger } = setup(activity)
+    const seen: string[] = []
+    const useCase = new HandleInboundMessage({
+      channel,
+      chat,
+      activity,
+      audit,
+      clock,
+      logger,
+      messages: en,
+      onForwarded: () => {
+        seen.push(activity.state)
+        activity.state = 'busy' // what TrackSessionActivity does
+      },
+    })
+    await useCase.execute(message)
+    expect(seen).toEqual(['idle'])
+    expect(chat.sent).toEqual([]) // this message itself is not "queued"
+    await useCase.execute(message)
+    expect(chat.sent.map((s) => s.text)).toEqual([en.queued])
+    channel.failWith = new Error('closed')
+    await useCase.execute(message)
+    expect(seen).toHaveLength(2)
+  })
+})

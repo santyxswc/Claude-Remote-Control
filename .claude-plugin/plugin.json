@@ -1,0 +1,17 @@
+{
+  "name": "telegram-bridge",
+  "version": "0.0.0",
+  "description": "Telegram channel for Claude Code: messages, permission prompts with buttons and finished/needs-answer notices, with pairing and a sender allowlist.",
+  "keywords": ["telegram", "channel", "messaging", "mcp", "hooks"],
+  "mcpServers": {
+    "telegram-bridge": {
+      "command": "bun",
+      "args": ["run", "--cwd", "${CLAUDE_PLUGIN_ROOT}", "--shell=bun", "--silent", "start:plugin"],
+      "env": {
+        "TELEGRAM_BRIDGE_DEV_PORT": "${TELEGRAM_BRIDGE_DEV_PORT:-}",
+        "TELEGRAM_BRIDGE_HOME": "${TELEGRAM_BRIDGE_HOME:-}",
+        "TELEGRAM_BRIDGE_LOCALE": "${TELEGRAM_BRIDGE_LOCALE:-}"
+      }
+    }
+  }
+}

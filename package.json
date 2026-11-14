@@ -8,6 +8,7 @@
   },
   "scripts": {
     "start": "bun src/main.ts",
+    "start:plugin": "bun install --production --frozen-lockfile --no-summary 1>&2 && bun src/main.ts",
     "bridge": "bun src/cli.ts",
     "test": "bun test",
     "lint": "biome check .",

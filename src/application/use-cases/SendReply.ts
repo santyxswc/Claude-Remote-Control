@@ -33,6 +33,8 @@ export interface SendReplyDeps {
   readonly audit: AuditLog
   readonly clock: Clock
   readonly logger: Logger
+  /** Observer: a reply reached the chat (the notice debounce listens). */
+  readonly onSent?: () => void
 }
 
 const MESSAGE_ID = /^[1-9][0-9]{0,15}$/
@@ -64,6 +66,7 @@ export class SendReply {
         request.replyTo === undefined ? undefined : { replyTo: request.replyTo },
       )
       this.#audit('reply.sent', { chatId, parts: receipt.parts, redactions: receipt.redactions })
+      this.deps.onSent?.()
       return { status: 'sent', parts: receipt.parts, redactions: receipt.redactions }
     } catch (error) {
       if (error instanceof EmptyMessageError) {
