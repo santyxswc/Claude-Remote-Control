@@ -3,7 +3,8 @@
  * Telegram polling to the session, the button-tap path and the permission
  * relay, the hook listener (F4), `/shot` (F5), the `/stop` brake (F6),
  * `ask_choice` and `/skills` (F7), `/diff` and its buttons (F8), the pinned
- * status (F9) and incoming files (F10), under the single-poller lock.
+ * status (F9), incoming files (F10) and `/wrap` with its memory proposals
+ * (F12), under the single-poller lock.
  */
 import type { PermissionRequestHandler } from '../adapters/mcp/McpChannelServer.ts'
 import { NoopSessionController } from '../adapters/session/NoopSessionController.ts'
@@ -44,6 +45,7 @@ import { buildBrake } from './brake.ts'
 import { buildChoices, type ChoiceWiring } from './choices.ts'
 import { buildGit } from './git.ts'
 import { buildHookListener, type HookListener, type SessionTracking } from './hooks.ts'
+import { buildMemory, type MemoryWiring } from './memory.ts'
 import { buildPermissions, type PermissionWiring } from './permissions.ts'
 import { buildStatusMessage } from './statusMessage.ts'
 
@@ -87,6 +89,11 @@ export interface TelegramInboundDeps {
   readonly git?: GitRepository
   /** The project's directory name, for `/diff` and the pinned status (F9). */
   readonly project?: string
+  /**
+   * The project directory, absolute (F12): `/wrap`, session summaries and
+   * `CLAUDE.md` proposals; without it there is no `/wrap`.
+   */
+  readonly projectDir?: string
   /** Test seams. */
   readonly fetch?: typeof fetch
   readonly pollTimeoutSeconds?: number
@@ -98,6 +105,8 @@ export interface TelegramInbound {
   readonly permissions: PermissionWiring
   /** `ask_choice` (F7), for the MCP tool. */
   readonly choices: ChoiceWiring
+  /** `save_session_summary` and `propose_memory` (F12), for the MCP tools. */
+  readonly memory: MemoryWiring | undefined
   stop(): Promise<void>
 }
 
@@ -170,6 +179,20 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
     session: permissions.session,
     canAsk: isPolling,
   })
+  const memory =
+    deps.projectDir === undefined
+      ? undefined
+      : buildMemory({
+          state,
+          projectDir: deps.projectDir,
+          outbound: chat,
+          forward,
+          messages,
+          clock,
+          logger,
+          session: permissions.session,
+          canAsk: isPolling,
+        })
   const attachments: AttachmentWiring | undefined =
     deps.attachments === undefined
       ? undefined
@@ -225,6 +248,8 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
     ...(skillsMenu === undefined ? {} : { skills: skillsMenu }),
     ...(attachments === undefined ? {} : { inboxUsage: attachments.usage }),
     ...(git === undefined ? {} : { git }),
+    // `/wrap` becomes text from the owner and runs the whole chain (bound late: the chain needs the commands).
+    ...(memory === undefined ? {} : { wrap: memory.wrap((message) => pipeline(message)) }),
     statusMessage,
   })
   const authorizeSender = new AuthorizeSender(state.allowed)
@@ -275,6 +300,7 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
         }),
     // A `/diff` button becomes text from the owner and runs the whole chain, like typing it.
     ...(git === undefined ? {} : { git: git.actions(pipeline) }),
+    ...(memory === undefined ? {} : { memory: memory.resolve }),
     prompts: chat,
     messages,
     clock,
@@ -299,6 +325,11 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
         permissions.expire.expireOrphans(),
       )
       void guarded(logger, 'cancelling orphaned choices', () => choices.expire.expireOrphans())
+      if (memory !== undefined) {
+        void guarded(logger, 'cancelling orphaned memory proposals', () =>
+          memory.expire.expireOrphans(),
+        )
+      }
       if (attachments !== undefined) {
         void guarded(logger, 'sweeping the inbox', async () => {
           await attachments.sweep.orphans()
@@ -323,6 +354,7 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
     void guarded(logger, 'permission and choice expiry sweep', async () => {
       await permissions.expire.execute()
       await choices.expire.execute()
+      await memory?.expire.execute()
     }).finally(() => {
       sweeping = false
     })
@@ -339,6 +371,7 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
   return {
     permissions,
     choices,
+    memory,
     async stop() {
       cancelSweep()
       cancelInboxSweep()

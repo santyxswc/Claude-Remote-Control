@@ -10,6 +10,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import packageJson from '../package.json' with { type: 'json' }
 import { createScreenCapturers } from './adapters/capture/createScreenCapturers.ts'
 import { systemProbe } from './adapters/capture/systemProbe.ts'
+import { ProcessChartRenderer } from './adapters/chart/ProcessChartRenderer.ts'
 import { DevChatGateway } from './adapters/dev/DevChatGateway.ts'
 import {
   DEV_CHAT_ID,
@@ -32,6 +33,7 @@ import { SystemClock } from './adapters/system/SystemClock.ts'
 import { LOCALE_ENV, messagesFor, parseLocale } from './application/i18n/messages.ts'
 import type { HookEventSource } from './application/ports/HookEventSource.ts'
 import type { Logger } from './application/ports/Logger.ts'
+import { buildCharts } from './composition/charts.ts'
 import { createHookIpcServer, createSessionTracking } from './composition/hooks.ts'
 import { buildOutbound } from './composition/outbound.ts'
 import { buildSendReply } from './composition/replies.ts'
@@ -83,7 +85,13 @@ logger = new RedactingLogger(logger, [
   ...(token === undefined ? [] : [token]),
   ...selectSecretValues(literalSecrets),
 ])
-const outbound = buildOutbound({ token, dev: devReplies, literalSecrets })
+// F11: charts are drawn in a child process; Vega and resvg are never loaded here.
+const outbound = buildOutbound({
+  token,
+  dev: devReplies,
+  literalSecrets,
+  charts: new ProcessChartRenderer(),
+})
 const tracking = createSessionTracking(clock)
 const sendReply = buildSendReply({
   state,
@@ -119,6 +127,19 @@ if (screenshots !== undefined) {
   logger.info('screenshot capture', { kinds: screenshots.availableKinds() })
 }
 
+// F11: like screenshots, only where images can reach an allowlisted chat.
+const charts =
+  state === undefined || token === undefined || stateDir === undefined
+    ? undefined
+    : buildCharts({ stateDir, state, outbound, messages, clock, logger })
+
+/** F12's tools need the polling side (buttons, notices); it is set up after connecting. */
+function memoryWiring() {
+  const memory = polling?.memory
+  if (memory === undefined) throw new Error('telegram is not set up in this process')
+  return memory
+}
+
 const channel = new McpChannelServer({
   name: SERVER_NAME,
   version: packageJson.version,
@@ -134,8 +155,14 @@ const channel = new McpChannelServer({
           polling === undefined
             ? { status: 'refused', reason: 'not_polling' }
             : polling.choices.ask.execute(request),
+        saveSummary: (request) => memoryWiring().saveSummary.execute(request),
+        proposeMemory: async (request) =>
+          polling?.memory === undefined
+            ? { status: 'refused', reason: 'not_polling' }
+            : polling.memory.propose.execute(request),
       }
     : {}),
+  ...(charts === undefined ? {} : { chart: (request) => charts.execute(request) }),
 })
 
 let devInbound: DevHttpInbound | undefined
@@ -150,6 +177,8 @@ async function shutdown(reason: string): Promise<void> {
   setTimeout(() => process.exit(0), 2000).unref()
   // A capture in flight is cancelled (its program killed, its files removed), never orphaned.
   await screenshots?.stop()
+  // The same for a chart being drawn: its process is killed.
+  await charts?.stop()
   await polling?.stop()
   state?.db.close()
   await devInbound?.stop()
@@ -229,6 +258,8 @@ if (state !== undefined && token === undefined) {
       }),
       git,
       ...(project === undefined ? {} : { project }),
+      // F12: summaries and CLAUDE.md go to the same project directory as git.
+      projectDir: gitDir,
     })
   } catch (error) {
     logger.error('telegram setup failed; serving MCP without it', { error })

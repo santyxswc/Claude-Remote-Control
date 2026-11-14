@@ -113,7 +113,8 @@ export class HandleInboundMessage {
 
 /**
  * Extra attributes of the channel tag: why the text reaches the session.
- * Choices: the answer to an `ask_choice` (`choice_id`). Attachments: the local file.
+ * Choices: the answer to an `ask_choice` (`choice_id`). Memory: how the owner answered a
+ * `propose_memory` (`proposal_id`). Attachments: the local file.
  */
 function contextMeta(context: ForwardContext | undefined): Record<string, string> {
   switch (context?.kind) {
@@ -121,6 +122,8 @@ function contextMeta(context: ForwardContext | undefined): Record<string, string
       return {}
     case 'choice':
       return { kind: 'choice', choice_id: context.choiceId }
+    case 'memory':
+      return { kind: 'memory', proposal_id: context.proposalId }
     case 'attachment':
       return {
         kind: 'attachment',

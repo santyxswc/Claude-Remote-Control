@@ -13,8 +13,8 @@ proyecto ([ADR 0001](docs/adr/0001-own-bot-per-user.md)).
 
 ## Estado
 
-El MVP (flujos F0 a F6) y cuatro flujos de la fase 3 (F7 opciones y skills, F8 git desde el chat,
-F9 mensaje de estado fijado, F10 archivos entrantes) están implementados y cubiertos por pruebas automáticas que usan dobles de
+El MVP (flujos F0 a F6) y los seis flujos de la fase 3 (F7 opciones y skills, F8 git desde el chat,
+F9 mensaje de estado fijado, F10 archivos entrantes, F11 gráficas, F12 resumen de sesión y memoria) están implementados y cubiertos por pruebas automáticas que usan dobles de
 Telegram y de Claude Code, más dos pruebas de humo locales para las capturas. **Todavía no se ha
 validado de punta a punta contra la API real de Telegram ni contra una sesión viva de Claude
 Code.** Varios comportamientos de Claude Code figuran como "necesita verificación en vivo" en los
@@ -65,8 +65,16 @@ Después del MVP:
 10. **Mensaje de estado fijado.** `/pin` fija un mensaje con el estado de la sesión, su última
     herramienta y las aprobaciones y preguntas pendientes, editado en el sitio a partir de los
     eventos de los hooks y nunca escrito por Claude. `/unpin` lo quita ([F9](docs/flows/F9.md)).
+11. **Gráficas.** La herramienta `send_chart` convierte una especificación Vega-Lite con datos en
+    línea en una foto PNG. No hay navegador: se dibuja en un proceso hijo de vida corta que no puede
+    cargar URLs ni archivos y que se mata a los 20 segundos; el texto de la gráfica se censura antes
+    de dibujar ([F11](docs/flows/F11.md)).
+12. **Resumen de sesión y memoria.** `/wrap` pide a Claude un resumen de la sesión, que el bridge
+    guarda en `docs/sessions/` y envía al chat, y líneas para `CLAUDE.md`. Las apruebas o rechazas
+    con un botón; solo las aprobadas se escriben, las escribe el bridge, bajo `## Session notes`
+    ([F12](docs/flows/F12.md)).
 
-Pendiente (ver [docs/roadmap.md](docs/roadmap.md), en inglés): gráficas, resumen de sesión a memoria, notas de voz, un topic por proyecto y la Mini App con pantalla en
+Pendiente (ver [docs/roadmap.md](docs/roadmap.md), en inglés): notas de voz, un topic por proyecto y la Mini App con pantalla en
 vivo. Contestar llamadas de Telegram queda fuera de alcance: la Bot API no lo permite.
 
 El MVP es un bot para una sola sesión de Claude Code.
@@ -200,6 +208,7 @@ Se envían al bot desde una cuenta emparejada, en chat privado. Cualquier otro t
 | `/diff [ruta]` | Envía los cambios sin commit (preparados, sin preparar y la lista de archivos sin seguimiento) como un archivo `.diff` censado, con botones Commit, Revertir y Abrir PR. Funciona con el freno puesto. |
 | `/pin` | Fija un mensaje de estado que sigue a la sesión (estado, última herramienta, pendientes). Apagado hasta que lo envíes. |
 | `/unpin` | Quita el mensaje de estado fijado y deja de actualizarlo. |
+| `/wrap` | Pide a Claude que guarde un resumen de la sesión en `docs/sessions/` y que proponga líneas para `CLAUDE.md`, que apruebas con botones. Con el freno puesto no envía nada. |
 
 Los permisos también aceptan `yes <id>` o `no <id>` como texto (el id aparece en la solicitud; con
 `si <id>` también funciona). Las solicitudes de riesgo alto solo se aprueban con los botones.
@@ -263,6 +272,13 @@ Lee esto antes de usarlo.
 - **`/diff` saca código del PC.** El archivo va censado, pero solo se detectan los secretos
   reconocibles. Los botones Commit, Revertir y Abrir PR son instrucciones, no aprobaciones: Claude
   pide permiso antes de cada comando.
+- **Las gráficas son imágenes.** Las cadenas de la especificación se censuran antes de dibujar,
+  pero los números no, y el resto de la imagen no pasa por la censura, como una captura. El
+  renderizador no puede cargar URLs ni archivos.
+- **`CLAUDE.md` solo cambia con tu toque.** `propose_memory` muestra todas las líneas; una línea
+  que la censura cambiaría se rechaza. Que Claude edite `CLAUDE.md`, `AGENTS.md` o `.claude/`
+  directamente es un permiso de riesgo alto. El resumen guardado es un archivo local y no se censura
+  (su copia en el chat sí).
 - **El mensaje de estado fijado es metadato de actividad.** Nombre del proyecto, nombres de
   herramientas y de archivos y descripciones de comandos quedan en un chat que Telegram puede leer.
   Está apagado hasta `/pin`.
@@ -274,8 +290,9 @@ Lee esto antes de usarlo.
 - **Permite la herramienta reply y nada más amplio.** Agrega `mcp__telegram-bridge__reply` a las
   reglas de permitidos de los ajustes de Claude Code (como plugin el nombre tiene la forma
   `mcp__plugin_<plugin>_<servidor>__reply`; compruébalo con `/permissions`). No permitas de antemano
-  `send_screenshot`: cada captura debe seguir siendo una decisión. `ask_choice` solo publica una
-  pregunta en tu propio chat; permitirla es decisión tuya. Detalles:
+  `send_screenshot`: cada captura debe seguir siendo una decisión. `ask_choice`, `send_chart`,
+  `save_session_summary` y `propose_memory` solo publican en tu propio chat (y las dos últimas
+  escriben `docs/sessions/` o, tras tu toque, `CLAUDE.md`); permitirlas es decisión tuya. Detalles:
   [docs/flows/F3.md](docs/flows/F3.md#the-reply-tool-needs-its-own-permission).
 - Los desconocidos no reciben respuesta ni generan eventos. Solo se aceptan chats privados de IDs de
   usuario permitidos.
@@ -338,7 +355,7 @@ bun run check   # lint, tipos, reglas de arquitectura y pruebas (lo que corre la
 ```
 
 Estructura: `src/domain` (reglas puras), `src/application` (puertos y casos de uso), `src/adapters`
-(Telegram, MCP, SQLite, capturas, git, IPC, sesión), `src/composition` y los cuatro puntos de entrada
+(Telegram, MCP, SQLite, capturas, gráficas, archivos del proyecto, git, IPC, sesión), `src/composition` y los cuatro puntos de entrada
 (`main.ts`, `cli.ts`, `hook.ts`, `brakeHook.ts`), `hooks/`, `skills/`, `tests/`, `docs/`. Ver
 [CONTRIBUTING.md](CONTRIBUTING.md) y [CLAUDE.md](CLAUDE.md).
 

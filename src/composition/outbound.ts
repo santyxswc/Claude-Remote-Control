@@ -6,6 +6,8 @@
  *   images:  RedactingImageGateway (caption redacted and fitted) -> route -> Telegram
  *   docs:    RedactingDocumentGateway (content redacted, then cut between lines; caption fitted) -> route -> Telegram
  *   status:  RedactingStatusGateway (redacted, then fitted to one message) -> route -> Telegram
+ *   charts:  RedactingChartRenderer (every string in the spec redacted) -> chart renderer
+ *            (the PNG it draws then goes out through the image pipeline above)
  *
  * This module is the only place that constructs the raw platform gateway,
  * and `buildOutbound` is its only export, so nothing in the app can get hold
@@ -20,11 +22,13 @@ import {
   TelegramChatGateway,
 } from '../adapters/telegram/TelegramChatGateway.ts'
 import { ChunkingChatGateway } from '../application/outbound/ChunkingChatGateway.ts'
+import { RedactingChartRenderer } from '../application/outbound/RedactingChartRenderer.ts'
 import { RedactingChatGateway } from '../application/outbound/RedactingChatGateway.ts'
 import { RedactingDocumentGateway } from '../application/outbound/RedactingDocumentGateway.ts'
 import { RedactingImageGateway } from '../application/outbound/RedactingImageGateway.ts'
 import { RedactingPromptGateway } from '../application/outbound/RedactingPromptGateway.ts'
 import { RedactingStatusGateway } from '../application/outbound/RedactingStatusGateway.ts'
+import type { ChartRenderer, RenderedChart } from '../application/ports/ChartRenderer.ts'
 import type { ChatGateway, SendOptions, SendReceipt } from '../application/ports/ChatGateway.ts'
 import type {
   DocumentGateway,
@@ -37,8 +41,10 @@ import type {
   PromptKeyboard,
   PromptOptions,
 } from '../application/ports/PromptGateway.ts'
+import type { CaptureWorkspace } from '../application/ports/ScreenCapturer.ts'
 import type { Sleeper } from '../application/ports/Sleeper.ts'
 import type { StatusMessageGateway } from '../application/ports/StatusMessageGateway.ts'
+import type { JsonObject } from '../domain/charts/chartSpec.ts'
 import type { PromptRef } from '../domain/permissions/PermissionRequest.ts'
 import { createSecretRedactor } from '../domain/redaction/secretValues.ts'
 
@@ -49,6 +55,11 @@ export interface OutboundOptions {
   readonly dev: DevChatGateway | undefined
   /** Literal values to redact verbatim (from the project's env files). */
   readonly literalSecrets: readonly string[]
+  /**
+   * Draws charts (F11). Text drawn into pixels cannot be redacted afterwards,
+   * so the renderer is wrapped here: it only ever sees a redacted spec.
+   */
+  readonly charts?: ChartRenderer
   /** Test seams for the Telegram adapter. */
   readonly fetch?: typeof fetch
   readonly sleeper?: Sleeper
@@ -58,7 +69,8 @@ export type Outbound = ChatGateway &
   PromptGateway &
   ImageGateway &
   DocumentGateway &
-  StatusMessageGateway
+  StatusMessageGateway &
+  ChartRenderer
 
 export function buildOutbound(options: OutboundOptions): Outbound {
   const telegram =
@@ -84,12 +96,19 @@ export function buildOutbound(options: OutboundOptions): Outbound {
     new RedactingImageGateway(routed, redactor, TELEGRAM_MAX_CAPTION_LENGTH),
     new RedactingDocumentGateway(routed, redactor, TELEGRAM_MAX_CAPTION_LENGTH),
     new RedactingStatusGateway(routed, redactor, TELEGRAM_MAX_MESSAGE_LENGTH),
+    options.charts === undefined ? undefined : new RedactingChartRenderer(options.charts, redactor),
   )
 }
 
 /** One object for the decorated pipelines, so callers need a single gateway. */
 class OutboundGateway
-  implements ChatGateway, PromptGateway, ImageGateway, DocumentGateway, StatusMessageGateway
+  implements
+    ChatGateway,
+    PromptGateway,
+    ImageGateway,
+    DocumentGateway,
+    StatusMessageGateway,
+    ChartRenderer
 {
   constructor(
     private readonly chat: ChatGateway,
@@ -97,7 +116,17 @@ class OutboundGateway
     private readonly images: ImageGateway,
     private readonly documents: DocumentGateway,
     private readonly status: StatusMessageGateway,
+    private readonly charts: ChartRenderer | undefined,
   ) {}
+
+  async renderChart(
+    spec: JsonObject,
+    workspace: CaptureWorkspace,
+    signal?: AbortSignal,
+  ): Promise<RenderedChart> {
+    if (this.charts === undefined) throw new Error('no chart renderer is configured')
+    return this.charts.renderChart(spec, workspace, signal)
+  }
 
   sendDocument(
     chatId: string,

@@ -20,6 +20,7 @@ export type InboundAttachment =
  */
 export type ForwardContext =
   | { readonly kind: 'choice'; readonly choiceId: string }
+  | { readonly kind: 'memory'; readonly proposalId: string }
   | {
       readonly kind: 'attachment'
       readonly path: string

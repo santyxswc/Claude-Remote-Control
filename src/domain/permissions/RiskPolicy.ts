@@ -14,6 +14,8 @@ export interface RiskPolicy {
 export interface RiskRule {
   readonly id: string
   readonly matches: (text: string) => boolean
+  /** Only for these tools (exact names); every tool when absent. */
+  readonly tools?: readonly string[]
 }
 
 /** Compiled once; no `g` flag, so `test` keeps no state between calls. */
@@ -230,6 +232,75 @@ function updatesWithoutWhere(text: string): boolean {
   )
 }
 
+/**
+ * Instruction and memory files Claude Code loads into every future session
+ * (F12): `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, in any directory (nested
+ * ones load on demand), and anything under a `.claude` directory (settings,
+ * rules, agents, skills, hooks, auto-memory). Compared ignoring case: Windows
+ * and macOS file systems do, and a false positive costs one extra tap.
+ */
+const MEMORY_FILE_NAMES = ['claude.md', 'claude.local.md', 'agents.md']
+const EDIT_TOOLS = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']
+
+/** True when a path (as the preview shows it, `\\` from JSON included) names a memory file. */
+export function isMemoryFilePath(path: string): boolean {
+  const segments = path
+    .replaceAll('\\\\', '\\')
+    .split(/[\\/]+/)
+    .map((segment) => segment.toLowerCase())
+  // Windows ignores trailing dots and spaces, and `name:stream` is the same file's stream.
+  const base = (segments.at(-1) ?? '').replace(/:.*$/, '').replace(/[. ]+$/, '')
+  return (
+    MEMORY_FILE_NAMES.includes(base) ||
+    /^(?:claude|agents)~\d{1,6}\.md$/.test(base) ||
+    segments.slice(0, -1).includes('.claude')
+  )
+}
+
+/** `"file_path": "…"` and `"notebook_path": "…"` values of an edit tool's preview. */
+const EDIT_PATH_FIELD = /"(?:file_path|notebook_path)"\s{0,8}:\s{0,8}"((?:[^"\\]|\\.){1,4096})"/g
+
+function editsMemoryFile(text: string): boolean {
+  for (const match of text.matchAll(EDIT_PATH_FIELD)) {
+    if (isMemoryFilePath(match[1] ?? '')) return true
+  }
+  return false
+}
+
+/** A shell redirection straight into a memory file: `> CLAUDE.md`, `>> docs/AGENTS.md`, `> .claude/x`. */
+const MEMORY_REDIRECT =
+  /(?<!<)>{1,2}\|?\s{0,8}(?:\\?["'])?(?:[^\s"'<>|;&]{0,512}[\\/])?(?:(?:claude(?:\.local)?|agents)\.md(?![\w.~-])|\.claude[\\/])/i
+
+/** Programs that write the file named in their operands. */
+const FILE_WRITERS = [
+  'tee',
+  'set-content',
+  'add-content',
+  'out-file',
+  'sc',
+  'ac',
+  'ln',
+  'new-item',
+  'ni',
+]
+/** Programs whose last operand is the file they write. */
+const FILE_COPIERS = ['cp', 'mv', 'install', 'copy', 'move', 'copy-item', 'move-item', 'cpi', 'mi']
+
+function writesMemoryFile(command: Command): boolean {
+  const operands = (from: number) =>
+    command.tokens.slice(from + 1).filter((token) => !token.startsWith('-'))
+  const writer = programIndex(command, FILE_WRITERS)
+  if (writer !== -1 && operands(writer).some(isMemoryFilePath)) return true
+  const copier = programIndex(command, FILE_COPIERS)
+  if (copier !== -1 && isMemoryFilePath(operands(copier).at(-1) ?? '')) return true
+  const sed = programIndex(command, ['sed', 'perl'])
+  return (
+    sed !== -1 &&
+    command.tokens.slice(sed + 1).some((token) => /^-[A-Za-z]*i/.test(token)) &&
+    operands(sed).some(isMemoryFilePath)
+  )
+}
+
 /** A separator inside a path as the preview shows it: `/`, `\` or JSON's `\\`. */
 const SEP = String.raw`(?:/|\\{1,2})`
 /** What may come right before a dotfile or a path: start, a separator, a quote, space, `~`, `=`. */
@@ -268,6 +339,13 @@ export const DEFAULT_RISK_RULES: readonly RiskRule[] = [
     matches: pattern(
       String.raw`${PATH_START}\.claude${SEP}(?:settings(?:\.local)?\.json|managed-settings\.json|hooks\b|plugins\b|commands\b|agents\b|skills\b)|${PATH_START}\.(?:claude|mcp)\.json\b|managed-settings\.json`,
     ),
+  },
+  // Memory and instructions for every future session (F12): editing them outside
+  // propose_memory skips the owner seeing the exact lines, so it takes two taps.
+  { id: 'memory_file_edit', tools: EDIT_TOOLS, matches: editsMemoryFile },
+  {
+    id: 'memory_file_write',
+    matches: (text) => MEMORY_REDIRECT.test(text) || anyCommand(writesMemoryFile)(text),
   },
   // Deleting files.
   {
@@ -567,7 +645,10 @@ export class PatternRiskPolicy implements RiskPolicy {
   constructor(private readonly rules: readonly RiskRule[] = DEFAULT_RISK_RULES) {}
 
   classify(request: { readonly toolName: string; readonly inputPreview: string }): RiskAssessment {
-    const reasons = this.rules.filter((rule) => rule.matches(request.inputPreview)).map((r) => r.id)
+    const reasons = this.rules
+      .filter((rule) => rule.tools === undefined || rule.tools.includes(request.toolName))
+      .filter((rule) => rule.matches(request.inputPreview))
+      .map((r) => r.id)
     return { level: reasons.length > 0 ? 'high' : 'low', reasons }
   }
 }

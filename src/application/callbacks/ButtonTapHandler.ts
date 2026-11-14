@@ -5,6 +5,7 @@ import { TokenBucket } from '../../domain/TokenBucket.ts'
 import { parseChoiceCallback } from '../choices/choiceCallbackData.ts'
 import { parseGitCallback } from '../git/gitCallbackData.ts'
 import type { Messages } from '../i18n/messages.ts'
+import { parseMemoryCallback } from '../memory/memoryCallbackData.ts'
 import { parsePermissionCallback } from '../permissions/callbackData.ts'
 import type { Clock } from '../ports/Clock.ts'
 import type { Logger } from '../ports/Logger.ts'
@@ -15,6 +16,7 @@ import type { AnswerChoice } from '../use-cases/AnswerChoice.ts'
 import type { AuthorizeSender } from '../use-cases/AuthorizeSender.ts'
 import type { RequestGitAction } from '../use-cases/RequestGitAction.ts'
 import type { RequestSkill } from '../use-cases/RequestSkill.ts'
+import type { ResolveMemoryProposal } from '../use-cases/ResolveMemoryProposal.ts'
 import type { ResolvePermission } from '../use-cases/ResolvePermission.ts'
 import type { InboundCallback } from './InboundCallback.ts'
 
@@ -31,6 +33,8 @@ export interface ButtonTapHandlerDeps {
   }
   /** `/diff` buttons (`g1:`, F8): fixed instructions to the session; without it they are ignored. */
   readonly git?: Pick<RequestGitAction, 'execute'>
+  /** Memory proposal buttons (`m1:`, F12): Approve writes the shown lines; without it they are ignored. */
+  readonly memory?: Pick<ResolveMemoryProposal, 'execute'>
   /** Only `answerCallback` is used here. */
   readonly prompts: Pick<PromptGateway, 'answerCallback'>
   readonly messages: Messages
@@ -54,7 +58,7 @@ interface AuthorizedTap {
  * Allowlisted taps are always answered so the client's spinner stops.
  *
  * Then the data is routed by its versioned prefix. Each parser is strict and
- * anchored and the prefixes differ, so a choice, skill or git button can never
+ * anchored and the prefixes differ, so a choice, skill, git or memory button can never
  * reach `ResolvePermission`, nor a permission button anything else.
  * Unknown data is answered with nothing.
  */
@@ -127,6 +131,10 @@ export class ButtonTapHandler {
     const git = parseGitCallback(data)
     if (git !== undefined && this.deps.git !== undefined) {
       return messages.gitTapFeedback(await this.deps.git.execute({ ...git, ...tap }))
+    }
+    const memory = parseMemoryCallback(data)
+    if (memory !== undefined && this.deps.memory !== undefined) {
+      return messages.memoryFeedback(await this.deps.memory.execute({ ...memory, ...tap }))
     }
     logger.warn('ignored a button tap with unknown data', { senderId: tap.sender.id })
     return undefined

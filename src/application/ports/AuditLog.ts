@@ -39,6 +39,17 @@ export type AuditEvent =
   | 'git.action_requested'
   | 'status.pinned'
   | 'status.unpinned'
+  | 'chart.sent'
+  | 'chart.not_sent'
+  | 'wrap.requested'
+  | 'session.summary_saved'
+  | 'session.summary_not_saved'
+  | 'memory.proposed'
+  | 'memory.refused'
+  | 'memory.approved'
+  | 'memory.rejected'
+  | 'memory.write_failed'
+  | 'memory.expired'
 
 /** Values that are safe to persist: never tokens, codes or message text. */
 export type AuditDetails = Readonly<Record<string, string | number | boolean | null>>

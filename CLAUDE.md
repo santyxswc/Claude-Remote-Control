@@ -39,6 +39,9 @@ Code session. The approved design is `docs/plan.md` (Spanish); each flow has its
 - `src/brakeHook.ts` runs synchronously before every tool call. Its no-brake path must stay one
   failed `open` of `<stateDir>/brake.json` (no stdin, no IPC, node builtins only). Missing flag:
   exit 0, nothing on stdout; flag present but unreadable: still braked (ADR 0003).
+- `src/adapters/chart/chartWorker.ts` runs as its own child process (ADR 0014). It is the only
+  module that imports Vega, Vega-Lite or resvg (lazily; a test enforces it); the channel never
+  loads them. Its stdout is the one JSON result line.
 - Windows is a first-class target: build paths with `node:path`, never hardcode `/` paths, `~`,
   Unix sockets (except behind `src/adapters/ipc/endpoint.ts`) or POSIX-only tools.
 - The repository is also the plugin (ADR 0009): `.claude-plugin/plugin.json` keeps the version of
