@@ -2,10 +2,12 @@ import { TokenBucket } from '../../domain/TokenBucket.ts'
 import type { CommandRegistry } from '../commands/CommandRegistry.ts'
 import type { Messages } from '../i18n/messages.ts'
 import type { AuditLog } from '../ports/AuditLog.ts'
+import type { BrakeFlag } from '../ports/BrakeFlag.ts'
 import type { ChatGateway } from '../ports/ChatGateway.ts'
 import type { Clock } from '../ports/Clock.ts'
 import type { Logger } from '../ports/Logger.ts'
 import type { HandleInboundMessage } from '../use-cases/HandleInboundMessage.ts'
+import { BrakeGateStep } from './BrakeGateStep.ts'
 import { CommandRouterStep } from './CommandRouterStep.ts'
 import { ForwardToSessionStep } from './ForwardToSessionStep.ts'
 import type { InboundStep } from './InboundStep.ts'
@@ -25,12 +27,14 @@ export interface SessionStepsDeps {
   readonly limiter?: TokenBucket
   /** Text verdicts for permission prompts; absent when the relay is off. */
   readonly permissionVerdicts?: PermissionVerdictStep
+  /** The panic brake; while engaged nothing is delivered to the session. */
+  readonly brake?: Pick<BrakeFlag, 'status'>
 }
 
 /**
  * The tail of the chain for the channel process, after authentication:
- * rate limit, text only, permission verdicts, commands, then delivery to the
- * session.
+ * rate limit, text only, permission verdicts, commands, the brake gate, then
+ * delivery to the session.
  */
 export function createSessionSteps(deps: SessionStepsDeps): InboundStep[] {
   return [
@@ -45,6 +49,17 @@ export function createSessionSteps(deps: SessionStepsDeps): InboundStep[] {
     new UnsupportedContentStep(deps.chat, deps.messages.onlyTextSupported, deps.clock, deps.logger),
     ...(deps.permissionVerdicts === undefined ? [] : [deps.permissionVerdicts]),
     new CommandRouterStep(deps.commands, deps.chat, deps.logger, deps.botUsername),
+    ...(deps.brake === undefined
+      ? []
+      : [
+          new BrakeGateStep(
+            deps.brake,
+            deps.chat,
+            deps.messages.brakeHeldMessage,
+            deps.clock,
+            deps.logger,
+          ),
+        ]),
     new ForwardToSessionStep(deps.forward),
   ]
 }

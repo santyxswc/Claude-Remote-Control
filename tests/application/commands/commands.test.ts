@@ -10,8 +10,10 @@ import { parseCommand } from '../../../src/application/commands/parseCommand.ts'
 import { StartCommand } from '../../../src/application/commands/StartCommand.ts'
 import { StatusCommand } from '../../../src/application/commands/StatusCommand.ts'
 import { messagesFor } from '../../../src/application/i18n/messages.ts'
+import type { ResumeSession } from '../../../src/application/use-cases/ResumeSession.ts'
+import type { StopSession } from '../../../src/application/use-cases/StopSession.ts'
 import { allowSender } from '../../../src/domain/AllowedSender.ts'
-import { ALICE, InMemoryAllowedSenders } from '../../fakes.ts'
+import { ALICE, InMemoryAllowedSenders, InMemoryBrakeFlag } from '../../fakes.ts'
 
 const en = messagesFor('en')
 
@@ -94,6 +96,7 @@ describe('F2 commands', () => {
       allowed,
       isSessionConnected: () => connected,
       pendingPermissions: () => 2,
+      brake: new InMemoryBrakeFlag(),
     })
     const { ctx, replies } = context()
     await status.execute(ctx)
@@ -105,6 +108,7 @@ describe('F2 commands', () => {
         'Paired since: 2026-11-13T09:30:00.000Z',
         'MCP connection to Claude Code: open',
         'Pending permission requests: 2',
+        'Brake: not engaged',
         'From here it cannot be known whether the session loaded this channel or whether Claude is busy.',
       ].join('\n'),
     )
@@ -119,6 +123,7 @@ describe('F2 commands', () => {
       allowed: new InMemoryAllowedSenders(),
       isSessionConnected: () => true,
       pendingPermissions: () => 0,
+      brake: new InMemoryBrakeFlag(),
     })
     const { ctx, replies } = context()
     await status.execute(ctx)
@@ -126,18 +131,48 @@ describe('F2 commands', () => {
     expect(replies[0]).toContain('Paired since: unknown')
   })
 
-  test('the F2 registry has start, help and status, described in the locale', () => {
+  test('/status shows the brake and since when; an unreadable flag is still engaged', async () => {
+    const brake = new InMemoryBrakeFlag()
+    const status = new StatusCommand({
+      description: '',
+      render: en.status,
+      botUsername: undefined,
+      allowed: new InMemoryAllowedSenders(),
+      isSessionConnected: () => true,
+      pendingPermissions: () => 0,
+      brake,
+    })
+    const { ctx, replies } = context()
+    brake.engage({ engagedAt: Date.UTC(2026, 10, 14, 8), actor: 'terminal', reason: undefined })
+    await status.execute(ctx)
+    brake.unreadable = true
+    await status.execute(ctx)
+    expect(replies[0]).toContain(
+      'Brake: ENGAGED since 2026-11-14T08:00:00.000Z (/resume releases it)',
+    )
+    expect(replies[1]).toContain('Brake: ENGAGED since unknown')
+  })
+})
+
+describe('createCommandRegistry', () => {
+  test('start, help, status, stop and resume, described in the locale', () => {
+    const es = messagesFor('es')
     const registry = createCommandRegistry({
-      messages: messagesFor('es'),
+      messages: es,
       botUsername: 'b',
       allowed: new InMemoryAllowedSenders(),
       isSessionConnected: () => true,
       pendingPermissions: () => 0,
+      brake: new InMemoryBrakeFlag(),
+      stopSession: {} as StopSession,
+      resumeSession: {} as ResumeSession,
     })
     expect(registry.list().map((c) => [c.name, c.description])).toEqual([
-      ['start', messagesFor('es').commandStartDescription],
-      ['help', messagesFor('es').commandHelpDescription],
-      ['status', messagesFor('es').commandStatusDescription],
+      ['start', es.commandStartDescription],
+      ['help', es.commandHelpDescription],
+      ['status', es.commandStatusDescription],
+      ['stop', es.commandStopDescription],
+      ['resume', es.commandResumeDescription],
     ])
   })
 })

@@ -230,6 +230,9 @@ All **Verified in docs**:
   Plugin layout (one repository as dev checkout and plugin; `mcpServers` in `plugin.json`
   replacing the `.mcp.json` entry of the same name): ADR 0009. Busy state now comes from
   `UserPromptSubmit`/`Stop` hooks (`docs/flows/F4.md`).
+- F6 (2026-11-14) re-fetched the hooks reference and built the brake per (b) and (d):
+  `continue: false` plus `permissionDecision: "deny"`, `onFailure: "continue"`, tmux only on
+  Linux. Details and failure policy: ADR 0003, `docs/flows/F6.md`.
 
 ## Consequences
 

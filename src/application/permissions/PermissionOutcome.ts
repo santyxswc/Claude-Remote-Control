@@ -20,3 +20,5 @@ export type PermissionOutcome =
   | 'invalid'
   /** The verdict could not be handed to Claude Code; nothing was decided. */
   | 'delivery_failed'
+  /** The panic brake is engaged: approvals are refused until `/resume`. */
+  | 'braked'

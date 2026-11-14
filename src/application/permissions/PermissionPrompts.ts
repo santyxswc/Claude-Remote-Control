@@ -3,7 +3,7 @@ import type { SenderProfile } from '../../domain/Sender.ts'
 import type { Messages } from '../i18n/messages.ts'
 import type { Logger } from '../ports/Logger.ts'
 import type { PromptGateway } from '../ports/PromptGateway.ts'
-import { renderPermissionPrompt } from './renderPermissionPrompt.ts'
+import { type DecisionCause, renderPermissionPrompt } from './renderPermissionPrompt.ts'
 
 /**
  * Posts a request's prompt and keeps every copy in step with its state.
@@ -38,8 +38,12 @@ export class PermissionPrompts {
   }
 
   /** Re-renders every copy for the current state (buttons removed once closed). */
-  async refresh(request: PermissionRequest, actor?: SenderProfile): Promise<void> {
-    const { text, keyboard } = renderPermissionPrompt(request, this.messages, actor)
+  async refresh(
+    request: PermissionRequest,
+    actor?: SenderProfile,
+    cause?: DecisionCause,
+  ): Promise<void> {
+    const { text, keyboard } = renderPermissionPrompt(request, this.messages, actor, cause)
     for (const ref of request.prompts) {
       try {
         await this.gateway.editPrompt(ref, text, keyboard)

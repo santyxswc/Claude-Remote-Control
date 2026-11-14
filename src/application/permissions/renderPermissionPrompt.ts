@@ -17,6 +17,9 @@ const TOOL_NAME_BUDGET = 100
 const DESCRIPTION_BUDGET = 600
 const MIN_PREVIEW_BUDGET = 200
 
+/** How a decision was reached, when the state alone does not say it (a `/stop`). */
+export type DecisionCause = 'stop'
+
 export interface RenderedPrompt {
   readonly text: string
   readonly keyboard: PromptKeyboard
@@ -31,8 +34,9 @@ export function renderPermissionPrompt(
   request: PermissionRequest,
   messages: Messages,
   actor?: SenderProfile,
+  cause?: DecisionCause,
 ): RenderedPrompt {
-  const status = statusLine(request, messages, actor)
+  const status = statusLine(request, messages, actor, cause)
   const suffix = status === undefined ? '' : `\n\n${status}`
   const view = {
     requestId: request.id,
@@ -69,6 +73,7 @@ function statusLine(
   request: PermissionRequest,
   messages: Messages,
   actor: SenderProfile | undefined,
+  cause: DecisionCause | undefined,
 ): string | undefined {
   const decision = () => ({
     who: actor === undefined ? (request.decidedBy ?? '?') : displayName(actor),
@@ -82,7 +87,9 @@ function statusLine(
     case 'approved':
       return messages.permissionApproved(decision())
     case 'denied':
-      return messages.permissionDenied(decision())
+      return cause === 'stop'
+        ? messages.permissionDeniedByStop(decision())
+        : messages.permissionDenied(decision())
     case 'expired':
       return messages.permissionExpired
     case 'resolved_locally':

@@ -7,9 +7,11 @@ import type { RiskPolicy } from '../../domain/permissions/RiskPolicy.ts'
 import type { PermissionPrompts } from '../permissions/PermissionPrompts.ts'
 import type { AllowedSenderStore } from '../ports/AllowedSenderStore.ts'
 import type { AuditLog } from '../ports/AuditLog.ts'
+import type { BrakeFlag } from '../ports/BrakeFlag.ts'
 import type { Clock } from '../ports/Clock.ts'
 import type { Logger } from '../ports/Logger.ts'
 import type { PermissionStore } from '../ports/PermissionStore.ts'
+import type { PermissionVerdictPort } from '../ports/PermissionVerdictPort.ts'
 
 /** A permission prompt as Claude Code sends it. Every field is untrusted. */
 export interface IncomingPermissionRequest {
@@ -27,6 +29,8 @@ export type RelayOutcome =
   | 'not_polling'
   /** The id is already in use; Claude Code drops verdicts for repeated ids. */
   | 'duplicate'
+  /** The panic brake is engaged: answered with `deny` at once, never shown in the chat. */
+  | 'denied_by_brake'
 
 export interface RelayPermissionRequestDeps {
   readonly store: PermissionStore
@@ -40,6 +44,9 @@ export interface RelayPermissionRequestDeps {
   readonly session: string
   /** True while this process polls the bot, i.e. can receive the taps. */
   readonly canRelay: () => boolean
+  readonly brake: BrakeFlag
+  /** Only for the automatic `deny` while the brake is engaged. */
+  readonly verdicts: PermissionVerdictPort
 }
 
 /**
@@ -58,6 +65,7 @@ export class RelayPermissionRequest {
       logger.warn('ignored a permission request with an invalid id')
       return 'invalid_id'
     }
+    if (this.deps.brake.status().engaged) return this.#denyWhileBraked(incoming)
     if (!this.deps.canRelay()) {
       logger.warn('not relaying a permission request: this process does not poll telegram', {
         requestId,
@@ -110,6 +118,32 @@ export class RelayPermissionRequest {
     // Someone answered while the copies were going out: bring them up to date.
     if (latest !== undefined && latest.state !== 'pending') await this.deps.prompts.refresh(latest)
     return 'relayed'
+  }
+
+  /**
+   * Not stored and not relayed: nobody should be asked to approve anything
+   * while the brake is on. If the verdict cannot be sent, the terminal
+   * dialog stays open, as for any request that is not relayed.
+   */
+  async #denyWhileBraked(incoming: IncomingPermissionRequest): Promise<RelayOutcome> {
+    const { requestId, toolName } = incoming
+    try {
+      await this.deps.verdicts.sendVerdict(requestId, 'deny')
+    } catch (error) {
+      this.deps.logger.error('could not deny a permission request while braked', {
+        requestId,
+        error,
+      })
+      return 'denied_by_brake'
+    }
+    this.deps.audit.append({
+      at: this.deps.clock.now(),
+      actor: 'system',
+      event: 'permission.denied',
+      details: { requestId, toolName, via: 'brake' },
+    })
+    this.deps.logger.info('denied a permission request: the brake is engaged', { requestId })
+    return 'denied_by_brake'
   }
 
   /** Stores the message refs, retrying if a tap changed the request in between. */

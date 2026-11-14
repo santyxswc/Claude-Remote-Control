@@ -17,6 +17,7 @@ import {
   FakeVerdicts,
   InMemoryAllowedSenders,
   InMemoryAuditLog,
+  InMemoryBrakeFlag,
   InMemoryPermissionStore,
   MemoryLogger,
 } from '../fakes.ts'
@@ -46,6 +47,7 @@ export function permissionHarness() {
   const logger = new MemoryLogger()
   const gateway = new FakePromptGateway()
   const verdicts = new FakeVerdicts()
+  const brake = new InMemoryBrakeFlag()
   const prompts = new PermissionPrompts(gateway, en, logger)
   let polling = true
   const common = { store, prompts, audit, clock, logger, session: SESSION }
@@ -56,6 +58,7 @@ export function permissionHarness() {
     audit,
     logger,
     gateway,
+    brake,
     verdicts,
     setPolling: (value: boolean) => {
       polling = value
@@ -65,11 +68,14 @@ export function permissionHarness() {
       allowed,
       risk: new PatternRiskPolicy(),
       canRelay: () => polling,
+      brake,
+      verdicts,
     }),
     resolve: new ResolvePermission({
       ...common,
       verdicts,
       authorize: new AuthorizeSender(allowed),
+      brake,
     }),
     expire: new ExpirePermissions(common),
     markLocal: new MarkPermissionResolvedLocally(common),

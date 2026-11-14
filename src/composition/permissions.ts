@@ -36,6 +36,8 @@ export interface PermissionWiringDeps {
 }
 
 export interface PermissionWiring {
+  /** This process's id on its permission requests. */
+  readonly session: string
   readonly relay: RelayPermissionRequest
   readonly resolve: ResolvePermission
   readonly expire: ExpirePermissions
@@ -56,13 +58,21 @@ export function buildPermissions(deps: PermissionWiringDeps): PermissionWiring {
   const prompts = new PermissionPrompts(deps.outbound, messages, logger)
   const authorize = new AuthorizeSender(state.allowed)
   const common = { store, prompts, audit: state.audit, clock, logger, session }
-  const resolve = new ResolvePermission({ ...common, verdicts: deps.verdicts, authorize })
+  const resolve = new ResolvePermission({
+    ...common,
+    verdicts: deps.verdicts,
+    authorize,
+    brake: state.brake,
+  })
   return {
+    session,
     relay: new RelayPermissionRequest({
       ...common,
       allowed: state.allowed,
       risk: new PatternRiskPolicy(),
       canRelay: deps.canRelay,
+      brake: state.brake,
+      verdicts: deps.verdicts,
     }),
     resolve,
     expire: new ExpirePermissions(common),

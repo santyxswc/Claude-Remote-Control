@@ -1,6 +1,7 @@
 import { describe, expect, mock, test } from 'bun:test'
 import { CommandRegistry } from '../../../src/application/commands/CommandRegistry.ts'
 import { messagesFor } from '../../../src/application/i18n/messages.ts'
+import { BrakeGateStep } from '../../../src/application/pipeline/BrakeGateStep.ts'
 import { CommandRouterStep } from '../../../src/application/pipeline/CommandRouterStep.ts'
 import { createSessionSteps } from '../../../src/application/pipeline/createSessionSteps.ts'
 import { ForwardToSessionStep } from '../../../src/application/pipeline/ForwardToSessionStep.ts'
@@ -9,7 +10,10 @@ import { buildPipeline } from '../../../src/application/pipeline/InboundStep.ts'
 import { RateLimitStep } from '../../../src/application/pipeline/RateLimitStep.ts'
 import { UnsupportedContentStep } from '../../../src/application/pipeline/UnsupportedContentStep.ts'
 import { HandleInboundMessage } from '../../../src/application/use-cases/HandleInboundMessage.ts'
-import { UNSUPPORTED_NOTICE_WINDOW_MS } from '../../../src/domain/inboundLimits.ts'
+import {
+  BRAKE_NOTICE_WINDOW_MS,
+  UNSUPPORTED_NOTICE_WINDOW_MS,
+} from '../../../src/domain/inboundLimits.ts'
 import { TokenBucket } from '../../../src/domain/TokenBucket.ts'
 import {
   ALICE,
@@ -18,6 +22,7 @@ import {
   FakeClock,
   FakeSessionActivity,
   InMemoryAuditLog,
+  InMemoryBrakeFlag,
   MemoryLogger,
 } from '../../fakes.ts'
 
@@ -251,5 +256,58 @@ describe('createSessionSteps', () => {
     await pipeline(message({ text: '/ping' }))
     await pipeline(message({ text: '/ping' }))
     expect(runs).toBe(1)
+  })
+})
+
+describe('BrakeGateStep', () => {
+  function setup() {
+    const brake = new InMemoryBrakeFlag()
+    const chat = new FakeChatGateway()
+    const clock = new FakeClock()
+    const step = new BrakeGateStep(brake, chat, en.brakeHeldMessage, clock, new MemoryLogger())
+    return { brake, chat, clock, step }
+  }
+
+  test('passes everything on while the brake is released', async () => {
+    const { step, chat } = setup()
+    const next = nextSpy()
+    await step.handle(message(), next)
+    expect(next).toHaveBeenCalledTimes(1)
+    expect(chat.sent).toEqual([])
+  })
+
+  test('while engaged (or unreadable) holds messages and says so once per window', async () => {
+    const { brake, step, chat, clock } = setup()
+    brake.unreadable = true
+    const next = nextSpy()
+    await step.handle(message(), next)
+    await step.handle(message({ messageId: '11' }), next)
+    clock.advance(BRAKE_NOTICE_WINDOW_MS)
+    await step.handle(message({ messageId: '12' }), next)
+    expect(next).not.toHaveBeenCalled()
+    expect(chat.sent.map((s) => s.text)).toEqual([en.brakeHeldMessage, en.brakeHeldMessage])
+  })
+})
+
+describe('createSessionSteps with the brake', () => {
+  test('the gate sits after the commands, right before delivery', () => {
+    const steps = createSessionSteps({
+      chat: new FakeChatGateway(),
+      messages: en,
+      logger: new MemoryLogger(),
+      clock: new FakeClock(),
+      audit: new InMemoryAuditLog(),
+      commands: new CommandRegistry(),
+      forward: {} as HandleInboundMessage,
+      botUsername: undefined,
+      brake: new InMemoryBrakeFlag(),
+    })
+    expect(steps.map((s) => s.constructor.name)).toEqual([
+      'RateLimitStep',
+      'UnsupportedContentStep',
+      'CommandRouterStep',
+      'BrakeGateStep',
+      'ForwardToSessionStep',
+    ])
   })
 })

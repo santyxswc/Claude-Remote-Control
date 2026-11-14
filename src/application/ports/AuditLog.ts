@@ -23,6 +23,9 @@ export type AuditEvent =
   | 'permission.expired'
   | 'permission.resolved_locally'
   | 'notice.sent'
+  | 'brake.engaged'
+  | 'brake.released'
+  | 'session.stopped'
 
 /** Values that are safe to persist: never tokens, codes or message text. */
 export type AuditDetails = Readonly<Record<string, string | number | boolean | null>>

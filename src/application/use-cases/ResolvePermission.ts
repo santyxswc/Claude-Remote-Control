@@ -7,11 +7,15 @@ import type { PermissionAction } from '../permissions/callbackData.ts'
 import type { PermissionOutcome } from '../permissions/PermissionOutcome.ts'
 import type { PermissionPrompts } from '../permissions/PermissionPrompts.ts'
 import type { AuditLog } from '../ports/AuditLog.ts'
+import type { BrakeFlag } from '../ports/BrakeFlag.ts'
 import type { Clock } from '../ports/Clock.ts'
 import type { Logger } from '../ports/Logger.ts'
 import type { PermissionStore } from '../ports/PermissionStore.ts'
 import type { PermissionVerdictPort } from '../ports/PermissionVerdictPort.ts'
 import type { AuthorizeSender } from './AuthorizeSender.ts'
+
+/** A tap, a typed "yes/no <id>", or the denials of `/stop`. */
+export type VerdictSource = 'button' | 'text' | 'stop'
 
 export interface ResolvePermissionInput {
   readonly requestId: string
@@ -19,7 +23,7 @@ export interface ResolvePermissionInput {
   /** Who tapped or typed; checked against the allowlist again here. */
   readonly sender: SenderProfile
   /** A text verdict cannot give the second tap a high-risk approval needs. */
-  readonly via: 'button' | 'text'
+  readonly via: VerdictSource
 }
 
 export interface ResolvePermissionDeps {
@@ -27,6 +31,8 @@ export interface ResolvePermissionDeps {
   readonly verdicts: PermissionVerdictPort
   readonly prompts: PermissionPrompts
   readonly authorize: AuthorizeSender
+  /** While engaged nothing can be approved (the CLI's `stop` leaves prompts open). */
+  readonly brake: BrakeFlag
   readonly audit: AuditLog
   readonly clock: Clock
   readonly logger: Logger
@@ -59,6 +65,12 @@ export class ResolvePermission {
     if (input.via === 'text' && input.action === 'approve' && current.risk === 'high') {
       return 'use_button'
     }
+    if (
+      (input.action === 'approve' || input.action === 'confirm') &&
+      this.deps.brake.status().engaged
+    ) {
+      return 'braked'
+    }
 
     let next: PermissionRequest
     try {
@@ -84,7 +96,7 @@ export class ResolvePermission {
     } else if (next.state === 'awaiting_confirmation') {
       this.#audit('permission.confirmation_requested', next, sender, input.via)
     }
-    await this.deps.prompts.refresh(next, sender)
+    await this.deps.prompts.refresh(next, sender, input.via === 'stop' ? 'stop' : undefined)
     return outcomeOf(next.state)
   }
 
@@ -110,7 +122,7 @@ export class ResolvePermission {
   async #deliver(
     decided: PermissionRequest,
     sender: SenderProfile,
-    via: 'button' | 'text',
+    via: VerdictSource,
   ): Promise<boolean> {
     const behavior = decided.state === 'approved' ? 'allow' : 'deny'
     try {
@@ -145,7 +157,7 @@ export class ResolvePermission {
       | 'permission.verdict_failed',
     request: PermissionRequest,
     sender: SenderProfile,
-    via?: 'button' | 'text',
+    via?: VerdictSource,
     extra: Record<string, string> = {},
   ): void {
     this.deps.audit.append({

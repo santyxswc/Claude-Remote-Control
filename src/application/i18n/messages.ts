@@ -24,6 +24,29 @@ export interface StatusView {
   readonly sessionConnected: boolean
   /** Permission requests of this session still waiting for an answer. */
   readonly pendingPermissions: number
+  /** The panic brake; `since` is ISO 8601, undefined when the flag cannot be read. */
+  readonly brake: { readonly engaged: false } | { readonly engaged: true; readonly since?: string }
+}
+
+/** What `/stop` did, reported truthfully. */
+export interface StopReportView {
+  readonly brake: 'engaged' | 'already_engaged'
+  /** ISO 8601; undefined when the existing flag cannot be read. */
+  readonly since: string | undefined
+  /** Pending permission requests of this session that got a deny verdict. */
+  readonly denied: number
+  /** `skipped` when the brake was already engaged. */
+  readonly interrupt: 'sent' | 'unavailable' | 'failed' | 'skipped'
+}
+
+/** What the PreToolUse hook tells the person at the terminal. */
+export interface BrakeHookView {
+  /** Undefined when the flag file exists but cannot be read. */
+  readonly source: 'telegram' | 'terminal' | 'unknown' | undefined
+  readonly since: string | undefined
+  readonly reason: string | undefined
+  /** The flag file, for when nothing else can release it. */
+  readonly flagPath: string
 }
 
 /** A permission prompt's content; every field from Claude Code is untrusted plain text. */
@@ -61,6 +84,8 @@ export interface Messages {
   readonly commandStartDescription: string
   readonly commandHelpDescription: string
   readonly commandStatusDescription: string
+  readonly commandStopDescription: string
+  readonly commandResumeDescription: string
   readonly slowDown: string
   readonly onlyTextSupported: string
   readonly queued: string
@@ -71,6 +96,7 @@ export interface Messages {
   readonly permissionAwaitingConfirmation: (seconds: number) => string
   readonly permissionApproved: (decision: PermissionDecisionView) => string
   readonly permissionDenied: (decision: PermissionDecisionView) => string
+  readonly permissionDeniedByStop: (decision: PermissionDecisionView) => string
   readonly permissionExpired: string
   readonly permissionResolvedLocally: string
   readonly permissionButtons: Readonly<Record<'approve' | 'deny' | 'confirm' | 'cancel', string>>
@@ -80,6 +106,23 @@ export interface Messages {
   // Bot: notices from hooks
   readonly noticeFinished: (view: SessionNoticeView) => string
   readonly noticeAttention: (view: SessionNoticeView) => string
+
+  // Bot: panic brake (F6)
+  readonly stopReport: (view: StopReportView) => string
+  readonly resumeReleased: string
+  readonly resumeNotEngaged: string
+  /** A message that was not forwarded because the brake is engaged. */
+  readonly brakeHeldMessage: string
+
+  // PreToolUse hook (F6): shown at the terminal, and to Claude
+  readonly brakeStopReason: (view: BrakeHookView) => string
+  readonly brakeToolDenied: string
+
+  // CLI: stop and resume
+  readonly cliStopEngaged: string
+  readonly cliStopAlreadyEngaged: (since: string | undefined) => string
+  readonly cliResumeReleased: string
+  readonly cliResumeNotEngaged: string
 
   // CLI: general
   readonly usage: string
@@ -131,7 +174,9 @@ Comandos:
   pair                   Empareja tu cuenta de Telegram con este PC
   access list            Lista las cuentas permitidas
   access revoke <id>     Retira el acceso a una cuenta
-  --help                 Muestra esta ayuda
+  stop [motivo]          Activa el freno: Claude se detiene en su próxima herramienta
+  resume                 Retira el freno
+  --help                Muestra esta ayuda
 
 El token nunca se pasa como argumento: init lo pide sin mostrarlo o lo lee de stdin.`
 
@@ -142,7 +187,9 @@ Commands:
   pair                   Pair your Telegram account with this PC
   access list            List the allowed accounts
   access revoke <id>     Remove an account's access
-  --help                 Show this help
+  stop [reason]          Engage the brake: Claude stops at its next tool call
+  resume                 Release the brake
+  --help                Show this help
 
 The token is never passed as an argument: init asks for it without echo or reads it from stdin.`
 
@@ -160,6 +207,29 @@ function commandList(commands: readonly CommandHelp[]): string {
   return commands.map((c) => `/${c.name} - ${c.description}`).join('\n')
 }
 
+function lines(...parts: readonly (string | undefined)[]): string {
+  return parts.filter((part) => part !== undefined).join('\n')
+}
+
+const INTERRUPT_ES: Readonly<Record<StopReportView['interrupt'], string | undefined>> = {
+  sent: 'Se envió Escape a la terminal de Claude Code (tmux) para cortar el turno en curso.',
+  unavailable:
+    'Cortar el turno en curso no está disponible aquí (sin tmux): Claude se detendrá en su próxima herramienta.',
+  failed: 'No se pudo enviar Escape por tmux: Claude se detendrá en su próxima herramienta.',
+  skipped: undefined,
+}
+
+const INTERRUPT_EN: Readonly<Record<StopReportView['interrupt'], string | undefined>> = {
+  sent: 'Sent Escape to the Claude Code terminal (tmux) to interrupt the current turn.',
+  unavailable:
+    'Interrupting the current turn is not available here (no tmux): Claude will stop at its next tool call.',
+  failed: 'Could not send Escape through tmux: Claude will stop at its next tool call.',
+  skipped: undefined,
+}
+
+const BRAKE_SOURCE_ES = { telegram: ' desde Telegram', terminal: ' desde la terminal', unknown: '' }
+const BRAKE_SOURCE_EN = { telegram: ' from Telegram', terminal: ' from the terminal', unknown: '' }
+
 const PERMISSION_FEEDBACK_ES: Readonly<Record<PermissionOutcome, string>> = {
   approved: 'Aprobado.',
   denied: 'Denegado.',
@@ -175,6 +245,7 @@ const PERMISSION_FEEDBACK_ES: Readonly<Record<PermissionOutcome, string>> = {
   invalid: 'Esa acción ya no aplica a la solicitud.',
   delivery_failed:
     'No se pudo enviar la respuesta a Claude Code. Inténtalo de nuevo o responde en la terminal.',
+  braked: 'El freno está activo: no se aprueba nada. Envía /resume primero.',
 }
 
 const PERMISSION_FEEDBACK_EN: Readonly<Record<PermissionOutcome, string>> = {
@@ -191,6 +262,7 @@ const PERMISSION_FEEDBACK_EN: Readonly<Record<PermissionOutcome, string>> = {
   invalid: 'That action no longer applies to the request.',
   delivery_failed:
     'The answer could not be sent to Claude Code. Try again or answer at the terminal.',
+  braked: 'The brake is engaged: nothing can be approved. Send /resume first.',
 }
 
 const es: Messages = {
@@ -206,11 +278,16 @@ const es: Messages = {
       `Emparejado desde: ${v.pairedSince ?? 'desconocido'}`,
       `Conexión MCP con Claude Code: ${v.sessionConnected ? 'abierta' : 'cerrada'}`,
       `Permisos pendientes: ${v.pendingPermissions}`,
+      v.brake.engaged
+        ? `Freno: ACTIVO desde ${v.brake.since ?? 'desconocido'} (/resume lo retira)`
+        : 'Freno: no activo',
       'No es posible saber desde aquí si la sesión cargó este canal ni si Claude está ocupado.',
     ].join('\n'),
   commandStartDescription: 'comprueba que el puente está conectado',
   commandHelpDescription: 'muestra esta ayuda',
   commandStatusDescription: 'estado del puente',
+  commandStopDescription: 'botón de pánico: frena a Claude y deniega los permisos pendientes',
+  commandResumeDescription: 'retira el freno de /stop',
   slowDown: 'Vas muy rápido: los mensajes de más se descartaron. Espera unos segundos.',
   onlyTextSupported: 'Por ahora solo se admite texto. Ese mensaje no se envió a Claude.',
   queued: 'Claude está ocupado: tu mensaje quedó en cola y lo verá al terminar.',
@@ -234,6 +311,7 @@ const es: Messages = {
     `⚠️ Riesgo alto: pulsa "Confirmar aprobación" en los próximos ${seconds} s.`,
   permissionApproved: (d) => `✅ Aprobado por ${d.who} (${d.at})`,
   permissionDenied: (d) => `❌ Denegado por ${d.who} (${d.at})`,
+  permissionDeniedByStop: (d) => `🛑 Denegado por /stop de ${d.who} (${d.at})`,
   permissionExpired: '⌛ Venció sin respuesta. Si sigue abierto, responde en la terminal.',
   permissionResolvedLocally: '🖥️ Respondido en la terminal.',
   permissionButtons: {
@@ -251,6 +329,44 @@ const es: Messages = {
       `🔔 Claude necesita tu respuesta${v.project === undefined ? '' : ` en ${v.project}`}.`,
       v,
     ),
+
+  stopReport: (v) =>
+    v.brake === 'already_engaged'
+      ? lines(
+          `🛑 El freno ya estaba activo (desde ${v.since ?? 'desconocido'}).`,
+          v.denied > 0 ? `Se denegaron ${v.denied} solicitudes de permiso pendientes.` : undefined,
+          'Envía /resume para retirarlo.',
+        )
+      : lines(
+          '🛑 Freno activado: Claude no puede usar ninguna herramienta hasta /resume.',
+          v.denied === 0
+            ? 'No había solicitudes de permiso pendientes.'
+            : `Se denegaron ${v.denied} solicitudes de permiso pendientes.`,
+          INTERRUPT_ES[v.interrupt],
+          'Envía /resume para retirarlo.',
+        ),
+  resumeReleased:
+    '▶️ Freno retirado. Claude puede volver a usar herramientas; tus mensajes vuelven a llegar a la sesión.',
+  resumeNotEngaged: 'El freno no estaba activo.',
+  brakeHeldMessage:
+    '🛑 El freno está activo: este mensaje no se envió a Claude. Envía /resume primero.',
+
+  brakeStopReason: (v) =>
+    v.source === undefined
+      ? `telegram-bridge: el freno está activo, pero su archivo no se puede leer (${v.flagPath}). Claude se detuvo. Para retirarlo ejecuta "telegram-bridge resume" o borra ese archivo.`
+      : lines(
+          `telegram-bridge: freno activado${BRAKE_SOURCE_ES[v.source]}${v.since === undefined ? '' : ` (${v.since})`}. Claude se detuvo.`,
+          v.reason === undefined ? undefined : `Motivo: ${v.reason}`,
+          'Para retirarlo envía /resume en Telegram o ejecuta "telegram-bridge resume".',
+        ),
+  brakeToolDenied:
+    'The telegram-bridge brake is engaged: the owner asked to stop. Do not retry; wait for the user.',
+
+  cliStopEngaged:
+    'Freno activado. Claude se detendrá en su próxima herramienta. Las solicitudes de permiso ya enviadas al chat no se pueden aprobar mientras dure el freno.',
+  cliStopAlreadyEngaged: (since) => `El freno ya estaba activo (desde ${since ?? 'desconocido'}).`,
+  cliResumeReleased: 'Freno retirado.',
+  cliResumeNotEngaged: 'El freno no estaba activo.',
 
   usage: USAGE_ES,
   unknownCommand: 'Comando o argumentos no válidos.',
@@ -309,11 +425,16 @@ const en: Messages = {
       `Paired since: ${v.pairedSince ?? 'unknown'}`,
       `MCP connection to Claude Code: ${v.sessionConnected ? 'open' : 'closed'}`,
       `Pending permission requests: ${v.pendingPermissions}`,
+      v.brake.engaged
+        ? `Brake: ENGAGED since ${v.brake.since ?? 'unknown'} (/resume releases it)`
+        : 'Brake: not engaged',
       'From here it cannot be known whether the session loaded this channel or whether Claude is busy.',
     ].join('\n'),
   commandStartDescription: 'check that the bridge is connected',
   commandHelpDescription: 'show this help',
   commandStatusDescription: 'bridge status',
+  commandStopDescription: 'panic button: brakes Claude and denies pending permissions',
+  commandResumeDescription: 'releases the /stop brake',
   slowDown: 'You are going too fast: the extra messages were dropped. Wait a few seconds.',
   onlyTextSupported: 'Only text is supported for now. That message was not sent to Claude.',
   queued: 'Claude is busy: your message is queued and Claude will see it when done.',
@@ -337,6 +458,7 @@ const en: Messages = {
     `⚠️ High risk: tap "Confirm approve" within ${seconds} s.`,
   permissionApproved: (d) => `✅ Approved by ${d.who} (${d.at})`,
   permissionDenied: (d) => `❌ Denied by ${d.who} (${d.at})`,
+  permissionDeniedByStop: (d) => `🛑 Denied by /stop from ${d.who} (${d.at})`,
   permissionExpired: '⌛ Expired without an answer. If it is still open, answer at the terminal.',
   permissionResolvedLocally: '🖥️ Answered at the terminal.',
   permissionButtons: {
@@ -351,6 +473,44 @@ const en: Messages = {
     notice(`✅ Claude finished${v.project === undefined ? '' : ` in ${v.project}`}.`, v),
   noticeAttention: (v) =>
     notice(`🔔 Claude needs your answer${v.project === undefined ? '' : ` in ${v.project}`}.`, v),
+
+  stopReport: (v) =>
+    v.brake === 'already_engaged'
+      ? lines(
+          `🛑 The brake was already engaged (since ${v.since ?? 'unknown'}).`,
+          v.denied > 0 ? `Denied ${v.denied} pending permission requests.` : undefined,
+          'Send /resume to release it.',
+        )
+      : lines(
+          '🛑 Brake engaged: Claude cannot run any tool until /resume.',
+          v.denied === 0
+            ? 'There were no pending permission requests.'
+            : `Denied ${v.denied} pending permission requests.`,
+          INTERRUPT_EN[v.interrupt],
+          'Send /resume to release it.',
+        ),
+  resumeReleased:
+    '▶️ Brake released. Claude can use tools again; your messages reach the session again.',
+  resumeNotEngaged: 'The brake was not engaged.',
+  brakeHeldMessage:
+    '🛑 The brake is engaged: this message was not sent to Claude. Send /resume first.',
+
+  brakeStopReason: (v) =>
+    v.source === undefined
+      ? `telegram-bridge: the brake is engaged, but its file cannot be read (${v.flagPath}). Claude stopped. To release it run "telegram-bridge resume" or delete that file.`
+      : lines(
+          `telegram-bridge: brake engaged${BRAKE_SOURCE_EN[v.source]}${v.since === undefined ? '' : ` (${v.since})`}. Claude stopped.`,
+          v.reason === undefined ? undefined : `Reason: ${v.reason}`,
+          'To release it send /resume in Telegram or run "telegram-bridge resume".',
+        ),
+  brakeToolDenied:
+    'The telegram-bridge brake is engaged: the owner asked to stop. Do not retry; wait for the user.',
+
+  cliStopEngaged:
+    'Brake engaged. Claude will stop at its next tool call. Permission requests already sent to the chat cannot be approved while it lasts.',
+  cliStopAlreadyEngaged: (since) => `The brake was already engaged (since ${since ?? 'unknown'}).`,
+  cliResumeReleased: 'Brake released.',
+  cliResumeNotEngaged: 'The brake was not engaged.',
 
   usage: USAGE_EN,
   unknownCommand: 'Invalid command or arguments.',

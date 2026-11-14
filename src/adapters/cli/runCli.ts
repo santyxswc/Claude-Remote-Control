@@ -1,6 +1,7 @@
 import type { Messages } from '../../application/i18n/messages.ts'
 import type { Terminal } from '../../application/ports/Terminal.ts'
 import { type AccessCommandDeps, runAccessList, runAccessRevoke } from './accessCommands.ts'
+import { type BrakeCommandDeps, runResume, runStop } from './brakeCommands.ts'
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from './exitCodes.ts'
 import { type InitCommandDeps, runInit } from './initCommand.ts'
 import { type PairCommandDeps, runPair } from './pairCommand.ts'
@@ -11,6 +12,8 @@ export type CliCommand =
   | { readonly name: 'pair' }
   | { readonly name: 'access-list' }
   | { readonly name: 'access-revoke'; readonly id: string }
+  | { readonly name: 'stop'; readonly reason: string | undefined }
+  | { readonly name: 'resume' }
 
 /** Parses argv (without the runtime and script). Undefined means a usage error. */
 export function parseArgs(argv: readonly string[]): CliCommand | undefined {
@@ -33,6 +36,10 @@ export function parseArgs(argv: readonly string[]): CliCommand | undefined {
         return { name: 'access-revoke', id: rest[1] }
       }
       return undefined
+    case 'stop':
+      return { name: 'stop', reason: rest.length === 0 ? undefined : rest.join(' ') }
+    case 'resume':
+      return rest.length === 0 ? { name: 'resume' } : undefined
     default:
       return undefined
   }
@@ -48,6 +55,7 @@ export interface CliContext {
   readonly init: () => InitCommandDeps
   readonly pair: () => PairCommandDeps
   readonly access: () => AccessCommandDeps
+  readonly brake: () => BrakeCommandDeps
 }
 
 /** Runs one command and returns the process exit code (0 ok, 1 failure, 2 usage). */
@@ -74,6 +82,10 @@ export async function runCli(argv: readonly string[], context: CliContext): Prom
         return runAccessList(context.access())
       case 'access-revoke':
         return runAccessRevoke(context.access(), command.id)
+      case 'stop':
+        return runStop(context.brake(), command.reason)
+      case 'resume':
+        return runResume(context.brake())
     }
   } catch (error) {
     terminal.error(messages.unexpectedError(error instanceof Error ? error.message : String(error)))
