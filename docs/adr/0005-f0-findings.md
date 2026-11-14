@@ -224,6 +224,43 @@ All **Verified in docs**:
 - **Reference plugin state directory**: it honours `CLAUDE_CONFIG_DIR` (falling back to
   `~/.claude`). Our resolver does not yet; consider it in F1.
 
+## Live findings (2026-11-14)
+
+Observed in interactive sessions of Claude Code 2.1.325 (claude.ai Pro) on Arch Linux with Bun
+1.4.4 and `@modelcontextprotocol/sdk` 1.32.2. They settle part of the "needs live verification"
+items above; the rest stay open.
+
+- **The channel registers with SDK 1.x.** With
+  `--dangerously-load-development-channels server:telegram-bridge` the debug log says
+  `Connection established ... "protocolEra":"legacy","negotiatedProtocolVersion":"2025-11-25"`
+  and then `Channel notifications registered`.
+- **Events are delivered and answered.** A `notifications/claude/channel` event shows in the
+  session as `← telegram-bridge: <text>`; Claude found the tool through tool search
+  (`ToolSearchTool: selected mcp__telegram-bridge__reply`) and called it. The tool name for the
+  `.mcp.json` route is `mcp__telegram-bridge__reply`.
+- **Without the flag events are dropped, as documented.** The server starts and its tools work;
+  the log says `Channel notifications skipped: server telegram-bridge not in --channels list for
+  this session`, and an emitted event never reaches the session. Servers that do not declare the
+  capability log `Channel notifications skipped: server did not declare claude/channel capability`.
+- **(a) One process per session**, for one session: a single `bun ./src/main.ts`. On exit Claude
+  Code sends SIGINT and the process exits cleanly. Two sessions at once, `/mcp` reconnect and
+  `--resume` are still open.
+- **Where MCP stderr goes.** Not to the session. With `--debug` it is copied to
+  `~/.claude/debug/<session-id>.txt` as `[ERROR] "MCP server \"<name>\" Server stderr: ..."`
+  entries (the level is always ERROR, whatever the server meant).
+- **The debug log redacts credentials.** `Bearer` and the word after it become `[REDACTED]`, as
+  do `token=` values and some URL parameters. A secret printed to stderr for the user to copy is
+  therefore lost, and so is a ready-to-paste line that spells `Authorization: Bearer ...`. The
+  dev listener now keeps its header in `<stateDir>/dev-token` and prints `curl -H "@<file>"`
+  lines, which survive (`docs/flows/F0.md`).
+- **`.mcp.json` `${VAR:-}` expansion works**: `TELEGRAM_BRIDGE_HOME` and
+  `TELEGRAM_BRIDGE_DEV_PORT` exported in the shell reached the server.
+- **Auto mode.** In a session with auto mode on, the `reply` call raised no permission prompt;
+  the permission relay (F3) has to be tested in manual mode.
+- **Not observed yet:** the development-channels warning, the "New MCP server found" prompt and
+  the `Channels (experimental)` notice. The start screen shows "1 more notice hidden" with the
+  channel flag and nothing without it.
+
 ## Follow-ups
 
 - F4 (2026-11-14) re-fetched the hooks and plugin manifest references. Hook IPC: ADR 0008.
