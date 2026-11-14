@@ -13,6 +13,8 @@ export interface PollingSupervisorOptions {
   readonly callbackHandler?: CallbackHandler
   /** Runs each time this process takes the lock and starts polling. */
   readonly onPollingStarted?: () => void
+  /** Runs each time polling ends here (stopped, lost lock, fatal error). */
+  readonly onPollingStopped?: () => void
   readonly logger: Logger
   readonly role: PollerRole
   readonly heartbeatMs: number
@@ -87,6 +89,7 @@ export class PollingSupervisor {
   #onPollingEnded(exit: PollingExit): void {
     this.#polling = false
     this.#clearTimer()
+    this.#o.onPollingStopped?.()
     if (this.#stopped) return
     this.#o.lock.release()
     this.#o.logger.warn('telegram polling ended', { exit })

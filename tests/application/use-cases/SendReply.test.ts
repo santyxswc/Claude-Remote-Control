@@ -138,3 +138,28 @@ describe('SendReply', () => {
     })
   })
 })
+
+describe('SendReply observer', () => {
+  test('onSent fires only for a delivered reply', async () => {
+    const { allowed, chat, audit, logger, clock } = setup()
+    let sent = 0
+    const useCase = new SendReply({
+      chat,
+      authorize: new AuthorizeSender(allowed),
+      extraChatIds: new Set(),
+      audit,
+      clock,
+      logger,
+      onSent: () => {
+        sent += 1
+      },
+    })
+    await useCase.execute({ chatId: MALLORY.id, text: 'refused' })
+    expect(sent).toBe(0)
+    await useCase.execute({ chatId: ALICE.id, text: 'ok' })
+    expect(sent).toBe(1)
+    chat.failWith = new Error('down')
+    await useCase.execute({ chatId: ALICE.id, text: 'fails' })
+    expect(sent).toBe(1)
+  })
+})

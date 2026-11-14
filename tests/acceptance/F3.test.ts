@@ -20,6 +20,7 @@ import {
 import { openState, type StateStores } from '../../src/adapters/storage/openState.ts'
 import { DotEnvProjectSecrets } from '../../src/adapters/system/DotEnvProjectSecrets.ts'
 import { messagesFor } from '../../src/application/i18n/messages.ts'
+import { createSessionTracking } from '../../src/composition/hooks.ts'
 import { buildOutbound } from '../../src/composition/outbound.ts'
 import { buildSendReply } from '../../src/composition/replies.ts'
 import {
@@ -90,6 +91,8 @@ async function start(): Promise<void> {
     logger,
     fetch: api.fetch,
     pollTimeoutSeconds: 1,
+    tracking: createSessionTracking(clock),
+    hooks: undefined,
     every: timers.every,
     session: 'this-session',
   })

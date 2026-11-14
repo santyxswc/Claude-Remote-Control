@@ -83,3 +83,33 @@ test('stop stops polling, releases the lock and cancels timers', async () => {
   s.timers.tick(RETRY)
   expect(s.poller.starts).toBe(1)
 })
+
+test('onPollingStarted / onPollingStopped bracket every polling period', async () => {
+  const lock = new FakeLock()
+  const poller = new FakePoller()
+  const timers = new ManualEvery()
+  const events: string[] = []
+  const supervisor = new PollingSupervisor({
+    lock,
+    poller,
+    handler: async () => {},
+    onPollingStarted: () => events.push('started'),
+    onPollingStopped: () => events.push('stopped'),
+    logger: new MemoryLogger(),
+    role: 'channel',
+    heartbeatMs: HEARTBEAT,
+    retryMs: RETRY,
+    every: timers.every,
+  })
+  supervisor.start()
+  lock.refreshResult = false
+  timers.tick(HEARTBEAT) // lost the lock
+  await flush()
+  expect(events).toEqual(['started', 'stopped'])
+  lock.refreshResult = true
+  timers.tick(RETRY)
+  expect(events).toEqual(['started', 'stopped', 'started'])
+  await supervisor.stop()
+  await flush()
+  expect(events).toEqual(['started', 'stopped', 'started', 'stopped'])
+})

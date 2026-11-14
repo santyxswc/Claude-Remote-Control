@@ -27,4 +27,6 @@ message is only read after the work it should have stopped. The plan's interrupt
 - The hook runs on every tool call, so it must be fast and must not depend on the channel process
   being alive (it reads the flag from disk).
 - The hook-to-channel IPC in the plan was a Unix socket; that must be generalised for Windows
-  (for example a loopback endpoint with a token, or a named pipe) when F4 is built.
+  (for example a loopback endpoint with a token, or a named pipe) when F4 is built. Done in F4:
+  a Unix socket or a named pipe with an HMAC per frame (ADR 0008). The brake hook itself reads its
+  flag from disk and does not use that IPC.

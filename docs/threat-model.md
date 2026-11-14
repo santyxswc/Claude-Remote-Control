@@ -21,7 +21,7 @@ This is the threat table from `docs/plan.md` ("Seguridad"), kept up to date. Sta
 | Approving something destructive by mistake | `RiskPolicy` detects patterns such as `rm -rf`, `git push --force` or `DROP` and asks for a second tap | **Implemented (F3).** `src/domain/permissions/RiskPolicy.ts` (table of 20 rules over `input_preview`, erring towards high; an elided or unserializable preview is high). High risk needs Approve then Confirm within 30 s (`awaiting_confirmation` in `PermissionRequest`); a text `yes <id>` cannot approve it |
 | Stale or double-tapped button | Each button carries the `request_id` from Claude Code; the state machine refuses to resolve twice; the keyboard is removed on resolution | **Implemented (F3).** Button data `p1:<id>:<action>` parsed strictly (`src/application/permissions/callbackData.ts`). `ResolvePermission` stores the decision with compare-and-set before sending the verdict, so a double tap or a racing expiry yields one verdict; every copy is edited and loses its buttons. Expired, resolved and other-session requests answer with a toast and change nothing |
 | Misleading text in a permission preview | `description` and `input_preview` are shown as escaped plain text, without formatting or links | **Implemented (F3).** Prompts are plain text (no `parse_mode`) with link previews disabled, redacted by `RedactingPromptGateway` and fitted to one message keeping the start and the end of the input (the dangerous part of a long command is at its end). Telegram still auto-links bare URLs |
-| Another local process writes to the hooks socket | Socket with mode 0600 inside the user's directory | **Planned (F4)** |
+| Another local process writes to the hooks socket | Socket with mode 0600 inside the user's directory | **Implemented (F4, ADR 0008).** Unix socket `<stateDir>/hooks.sock`, chmod 0600 inside the 0700 state directory (or a short fallback directory that both sides require to be owned by the user and 0700); a named pipe on Windows. Every frame carries an HMAC-SHA256 over its JSON with a 32-byte secret from `<stateDir>/hooks.key` (0600), verified in constant time, so the secret never travels. Frames are size-capped (256 KiB), time-limited (2 s) and bounded in number; rejected ones are counted and logged by reason only. Only the poller listens; never a network socket (`src/adapters/ipc/`) |
 | No record of what was approved | Append-only audit: who, when, what and which verdict | **Implemented (F1-F3).** `audit_log` table with triggers that reject `UPDATE` and `DELETE` (`src/adapters/storage/sqlite.ts`); no update or delete API (`SqliteAuditLog`). Every pairing and allowlist change is audited, without codes, tokens or message text. F2 adds `message.forwarded` (sender id, message id, length), `message.rate_limited`, `reply.sent` (chat id, parts, redaction count), `reply.refused`, `reply.failed`; never message text or secret values. F3 adds `permission.relayed` (tool, risk, rule ids), `permission.confirmation_requested`, `permission.approved` and `permission.denied` (who, tool, risk, button or text), `permission.verdict_failed`, `permission.expired`, `permission.resolved_locally`; never the description or the input |
 
 ## Additional F1 notes
@@ -45,8 +45,8 @@ This is the threat table from `docs/plan.md` ("Seguridad"), kept up to date. Sta
 - **What is redacted is only the text sent through `reply` and bot notices.** Inbound text from
   the owner is not redacted (it goes to the local session). Logs never contain message text.
 - **Busy state is unknown.** The bot cannot tell whether Claude is mid-turn, so it never says
-  "queued" yet; events still queue in the session (ADR 0005). F4 feeds `SessionActivity` from
-  hooks.
+  "queued" yet; events still queue in the session (ADR 0005). Since F4, hooks feed
+  `SessionActivity` (`TrackSessionActivity`); without hooks it stays `unknown`.
 
 ## Additional F3 notes
 
@@ -73,7 +73,27 @@ This is the threat table from `docs/plan.md` ("Seguridad"), kept up to date. Sta
   planned.
 - **Answered at the terminal.** Without a hook signal the phone keeps the buttons until expiry; a
   tap then shows "Approved" while Claude Code drops the verdict for the closed id. F4's
-  `PostToolUse` hook narrows this.
+  `PostToolUse` hook narrows this: a tool that ran closes the matching prompt. A local denial
+  still waits for expiry.
+
+## Additional F4 notes
+
+- **The hook runs in the user's session.** `src/hook.ts` imports only node builtins and fails
+  open: exit 0, nothing on stdout, a 1.5 s hard deadline. It never creates the secret or the state
+  directory, so a session where the bridge never ran is untouched. The fail-closed brake is F6.
+- **Least data over IPC.** The hook forwards only the fields the channel uses, clamped. It never
+  forwards the prompt text or `tool_response`.
+- **Notices go out like replies.** They go through `buildOutbound()` (redaction, then chunking),
+  to allowlisted senders only, fitted to one message. Audit rows carry the event and the length,
+  never the text. A notice contains up to 3,500 characters of Claude's final message.
+- **Windows named pipe squatting.** Pipe names are machine-wide and their ACLs are not managed. A
+  process of another local user that creates the name before the channel starts would receive hook
+  payloads (but not the secret), and notices would stop working (the listener reports `in_use`).
+  This is accepted for single-user PCs (ADR 0008).
+- **Hook events from other sessions.** Every session with the plugin's hooks reports to the
+  polling process. They are authenticated (same user, same key) but not routed. Notices name the
+  project. Busy state is shared, and a `PostToolUse` from another session could close a matching
+  pending prompt's buttons; it never sends a verdict.
 
 ## Known limits and open risks
 

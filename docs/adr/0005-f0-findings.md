@@ -224,6 +224,13 @@ All **Verified in docs**:
 - **Reference plugin state directory**: it honours `CLAUDE_CONFIG_DIR` (falling back to
   `~/.claude`). Our resolver does not yet; consider it in F1.
 
+## Follow-ups
+
+- F4 (2026-11-14) re-fetched the hooks and plugin manifest references. Hook IPC: ADR 0008.
+  Plugin layout (one repository as dev checkout and plugin; `mcpServers` in `plugin.json`
+  replacing the `.mcp.json` entry of the same name): ADR 0009. Busy state now comes from
+  `UserPromptSubmit`/`Stop` hooks (`docs/flows/F4.md`).
+
 ## Consequences
 
 - F1 can start: the contract, hook schema, plugin layout and Telegram limits are known.

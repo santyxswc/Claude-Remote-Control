@@ -22,6 +22,8 @@ export interface HandleInboundMessageDeps {
   readonly clock: Clock
   readonly logger: Logger
   readonly messages: Pick<Messages, 'queued' | 'deliveryFailed'>
+  /** Observer: the message reached the session (activity and notice debounce listen). */
+  readonly onForwarded?: () => void
 }
 
 export type ForwardOutcome = 'forwarded' | 'failed'
@@ -71,6 +73,8 @@ export class HandleInboundMessage {
     if (this.deps.activity.current() === 'busy') {
       await this.#tell(message.chatId, this.deps.messages.queued)
     }
+    // After the busy check: this message itself must not make the session look busy.
+    this.deps.onForwarded?.()
     return 'forwarded'
   }
 

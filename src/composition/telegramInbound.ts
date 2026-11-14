@@ -1,10 +1,9 @@
 /**
  * Wires the inbound side of the channel: the Chain of Responsibility from
  * Telegram polling to the session, the button-tap path and the permission
- * relay, under the single-poller lock.
+ * relay and the hook listener (F4), under the single-poller lock.
  */
 import type { PermissionRequestHandler } from '../adapters/mcp/McpChannelServer.ts'
-import { UnknownSessionActivity } from '../adapters/session/UnknownSessionActivity.ts'
 import type { StateStores } from '../adapters/storage/openState.ts'
 import { LOCK_HEARTBEAT_MS } from '../adapters/storage/SqlitePollerLock.ts'
 import { type Every, realEvery } from '../adapters/system/every.ts'
@@ -18,12 +17,14 @@ import { createSessionSteps } from '../application/pipeline/createSessionSteps.t
 import type { ChannelPort } from '../application/ports/ChannelPort.ts'
 import type { ChatGateway } from '../application/ports/ChatGateway.ts'
 import type { Clock } from '../application/ports/Clock.ts'
+import type { HookEventSource } from '../application/ports/HookEventSource.ts'
 import type { Logger } from '../application/ports/Logger.ts'
 import type { PermissionVerdictPort } from '../application/ports/PermissionVerdictPort.ts'
 import type { PromptGateway } from '../application/ports/PromptGateway.ts'
 import { AuthorizeSender } from '../application/use-cases/AuthorizeSender.ts'
 import { ClaimPairing } from '../application/use-cases/ClaimPairing.ts'
 import { HandleInboundMessage } from '../application/use-cases/HandleInboundMessage.ts'
+import { buildHookListener, type HookListener, type SessionTracking } from './hooks.ts'
 import { buildPermissions, type PermissionWiring } from './permissions.ts'
 
 /** While another process polls the bot, check this often whether it has finished. */
@@ -47,6 +48,10 @@ export interface TelegramInboundDeps {
   readonly messages: Messages
   readonly clock: Clock
   readonly logger: Logger
+  /** Busy/idle and notice debounce, shared with the reply tool. */
+  readonly tracking: SessionTracking
+  /** Where hook events arrive; without it there are no notices and activity stays unknown. */
+  readonly hooks: HookEventSource | undefined
   /** Test seams. */
   readonly fetch?: typeof fetch
   readonly pollTimeoutSeconds?: number
@@ -77,15 +82,34 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
   })
   deps.channel.onPermissionRequest((request) => permissions.relay.execute(request))
 
+  const { tracking } = deps
   const forward = new HandleInboundMessage({
     channel: deps.channel,
     chat,
-    activity: new UnknownSessionActivity(),
+    activity: tracking.activity,
     audit: state.audit,
     clock,
     logger,
     messages,
+    onForwarded: () => {
+      tracking.policy.ownerWrote(clock.now())
+      tracking.activity.messageForwarded()
+    },
   })
+  const hooks: HookListener | undefined =
+    deps.hooks === undefined
+      ? undefined
+      : buildHookListener({
+          state,
+          source: deps.hooks,
+          chat,
+          tracking,
+          permissions,
+          messages,
+          clock,
+          logger,
+          every,
+        })
   const commands = createCommandRegistry({
     messages,
     botUsername,
@@ -130,10 +154,13 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
     handler: pipeline,
     callbackHandler: (callback) => permissions.callbacks.handle(callback),
     // Requests relayed by an earlier poller can no longer be answered from the chat.
-    onPollingStarted: () =>
+    onPollingStarted: () => {
       void guarded(logger, 'expiring orphaned permission requests', () =>
         permissions.expire.expireOrphans(),
-      ),
+      )
+      hooks?.onPollingStarted()
+    },
+    onPollingStopped: () => hooks?.onPollingStopped(),
     logger,
     role: 'channel',
     heartbeatMs: LOCK_HEARTBEAT_MS,
@@ -159,6 +186,7 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
     async stop() {
       cancelSweep()
       await supervisor.stop()
+      await hooks?.stop()
     },
   }
 }

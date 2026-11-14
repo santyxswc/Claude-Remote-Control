@@ -17,6 +17,7 @@ import { DotEnvProjectSecrets } from '../../src/adapters/system/DotEnvProjectSec
 
 import { TELEGRAM_MAX_MESSAGE_LENGTH } from '../../src/adapters/telegram/TelegramChatGateway.ts'
 import { messagesFor } from '../../src/application/i18n/messages.ts'
+import { createSessionTracking } from '../../src/composition/hooks.ts'
 import { buildOutbound } from '../../src/composition/outbound.ts'
 import { buildSendReply } from '../../src/composition/replies.ts'
 import {
@@ -92,6 +93,8 @@ beforeEach(async () => {
     logger,
     fetch: api.fetch,
     pollTimeoutSeconds: 1,
+    tracking: createSessionTracking(clock),
+    hooks: undefined,
   })
   await api.waitForPolls(1)
 })

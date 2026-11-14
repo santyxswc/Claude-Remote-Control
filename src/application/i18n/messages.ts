@@ -41,6 +41,12 @@ export interface PermissionDecisionView {
   readonly at: string
 }
 
+/** A hook notice; `project` is the session's directory name, `message` untrusted plain text. */
+export interface SessionNoticeView {
+  readonly project: string | undefined
+  readonly message: string | undefined
+}
+
 export interface CommandHelp {
   readonly name: string
   readonly description: string
@@ -70,6 +76,10 @@ export interface Messages {
   readonly permissionButtons: Readonly<Record<'approve' | 'deny' | 'confirm' | 'cancel', string>>
   /** Short (a toast holds 200 characters): what a tap or a text verdict did. */
   readonly permissionFeedback: (outcome: PermissionOutcome) => string
+
+  // Bot: notices from hooks
+  readonly noticeFinished: (view: SessionNoticeView) => string
+  readonly noticeAttention: (view: SessionNoticeView) => string
 
   // CLI: general
   readonly usage: string
@@ -139,6 +149,11 @@ The token is never passed as an argument: init asks for it without echo or reads
 function who(c: ClaimantView): string {
   const handle = c.username === undefined ? '' : ` (@${c.username})`
   return `${c.displayName}${handle}, id ${c.id}`
+}
+
+function notice(headline: string, view: SessionNoticeView): string {
+  const body = view.message?.trim()
+  return body === undefined || body === '' ? headline : `${headline}\n\n${body}`
 }
 
 function commandList(commands: readonly CommandHelp[]): string {
@@ -228,6 +243,14 @@ const es: Messages = {
     cancel: 'Cancelar',
   },
   permissionFeedback: (outcome) => PERMISSION_FEEDBACK_ES[outcome],
+
+  noticeFinished: (v) =>
+    notice(`✅ Claude terminó${v.project === undefined ? '' : ` en ${v.project}`}.`, v),
+  noticeAttention: (v) =>
+    notice(
+      `🔔 Claude necesita tu respuesta${v.project === undefined ? '' : ` en ${v.project}`}.`,
+      v,
+    ),
 
   usage: USAGE_ES,
   unknownCommand: 'Comando o argumentos no válidos.',
@@ -323,6 +346,11 @@ const en: Messages = {
     cancel: 'Cancel',
   },
   permissionFeedback: (outcome) => PERMISSION_FEEDBACK_EN[outcome],
+
+  noticeFinished: (v) =>
+    notice(`✅ Claude finished${v.project === undefined ? '' : ` in ${v.project}`}.`, v),
+  noticeAttention: (v) =>
+    notice(`🔔 Claude needs your answer${v.project === undefined ? '' : ` in ${v.project}`}.`, v),
 
   usage: USAGE_EN,
   unknownCommand: 'Invalid command or arguments.',
