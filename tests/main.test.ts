@@ -4,7 +4,7 @@
  * client standing in for Claude Code.
  */
 import { afterAll, beforeAll, expect, test } from 'bun:test'
-import { existsSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
@@ -66,11 +66,17 @@ beforeAll(async () => {
     () => /dev inbound listening \{"url":"(http:\/\/127\.0\.0\.1:\d+)"\}/.exec(stderr)?.[1],
     'the dev listener',
   )
-  // Printed once on stderr for the developer to paste; never logged as a field.
-  devToken = await waitFor(
-    () => /Authorization: Bearer ([A-Za-z0-9_-]{43})/.exec(stderr)?.[1],
-    'the dev token',
+  // Claude Code redacts `Bearer <token>` in its debug log, so the token is read from the
+  // owner-only header file the curl lines on stderr point to, as a developer would.
+  const tokenFile = await waitFor(
+    () => /curl -X POST -H "@([^"]+)"/.exec(stderr)?.[1],
+    'the dev token file',
   )
+  expect(tokenFile).toBe(join(stateDir, 'dev-token'))
+  devToken =
+    /^Authorization: Bearer ([A-Za-z0-9_-]{43})\n$/.exec(readFileSync(tokenFile, 'utf8'))?.[1] ?? ''
+  expect(devToken).not.toBe('')
+  expect(stderr).not.toContain(devToken)
 }, 20_000)
 
 afterAll(async () => {

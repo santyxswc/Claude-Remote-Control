@@ -257,7 +257,7 @@ Todo son variables de entorno opcionales.
 | `TELEGRAM_BRIDGE_FFMPEG` | `ffmpeg` en el `PATH` | Ruta absoluta de `ffmpeg`, que convierte la nota (Opus) para whisper. |
 | `CLAUDE_PROJECT_DIR` | lo define Claude Code | El proyecto cuyas `.claude/skills` lista `/skills`. Si no está definido o es relativo, se usa el directorio de trabajo cuando tiene `.claude/` o `.git`; si no, solo se listan las skills personales. `/diff` y el mensaje de estado también lo usan (si no, el directorio de trabajo). |
 | `TELEGRAM_BRIDGE_DEBUG` | sin definir | `1` imprime diagnósticos en stderr desde los scripts de hooks. |
-| `TELEGRAM_BRIDGE_DEV_PORT` | sin definir | Solo desarrollo, sin bot: un listener HTTP local (F0) que exige el token bearer que imprime una vez en stderr, rechaza peticiones de navegador (`Origin`, `Host` ajeno) y no arranca si hay un token de bot configurado. Déjala sin definir. |
+| `TELEGRAM_BRIDGE_DEV_PORT` | sin definir | Solo desarrollo, sin bot: un listener HTTP local (F0) que exige el token bearer que guarda en `<stateDir>/dev-token`, rechaza peticiones de navegador (`Origin`, `Host` ajeno) y no arranca si hay un token de bot configurado. Déjala sin definir. |
 
 Los hooks, la CLI y el canal deben resolver el mismo directorio de estado; define estas variables
 igual para todos (heredan el entorno de Claude Code).

@@ -14,6 +14,7 @@ import { ProcessChartRenderer } from './adapters/chart/ProcessChartRenderer.ts'
 import { DevChatGateway } from './adapters/dev/DevChatGateway.ts'
 import {
   DEV_CHAT_ID,
+  DEV_TOKEN_FILE,
   type DevHttpInbound,
   startDevHttpInbound,
 } from './adapters/dev/DevHttpInbound.ts'
@@ -288,7 +289,13 @@ if (state !== undefined && token === undefined) {
 
 if (devPort !== undefined && devReplies !== undefined) {
   try {
-    devInbound = startDevHttpInbound({ port: devPort, channel, replies: devReplies, logger })
+    devInbound = startDevHttpInbound({
+      port: devPort,
+      channel,
+      replies: devReplies,
+      logger,
+      ...(stateDir === undefined ? {} : { tokenFile: join(stateDir, DEV_TOKEN_FILE) }),
+    })
   } catch (error) {
     // E.g. another session already holds the port; keep serving MCP without the listener.
     logger.error('dev inbound failed to start', { port: devPort, error })

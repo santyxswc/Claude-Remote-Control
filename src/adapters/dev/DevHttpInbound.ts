@@ -1,10 +1,15 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { rmSync } from 'node:fs'
 import type { ChannelPort } from '../../application/ports/ChannelPort.ts'
 import type { Logger } from '../../application/ports/Logger.ts'
+import { writeSecretFile } from '../storage/stateDir.ts'
 import type { DevChatGateway, DevReply } from './DevChatGateway.ts'
 
 /** Every dev event is addressed to this chat, so Claude's replies come back here. */
 export const DEV_CHAT_ID = 'dev'
+
+/** Name of the token file inside the state directory. */
+export const DEV_TOKEN_FILE = 'dev-token'
 
 const LOOPBACK = '127.0.0.1'
 const MAX_BODY_BYTES = 64 * 1024
@@ -17,17 +22,27 @@ export interface DevHttpInboundOptions {
   readonly replies: DevChatGateway
   readonly logger: Logger
   /**
-   * Where the token and the ready-to-paste curl lines are printed, once.
-   * Defaults to stderr (stdout belongs to MCP). Never the logger: the token
-   * must not end up in log files or audit rows.
+   * Where the ready-to-paste curl lines are printed, once. Defaults to stderr
+   * (stdout belongs to MCP). Never the logger: the token must not end up in
+   * log files or audit rows.
    */
   readonly announce?: (text: string) => void
+  /**
+   * An owner-only file that holds the `Authorization` header while the
+   * listener runs. Claude Code replaces `Bearer` and the word after it with
+   * `[REDACTED]` when it copies a server's stderr to its debug log (seen on
+   * 2.1.325), so a printed token cannot be recovered there, and neither can a
+   * curl line that spells the header. With a file the curl lines pass it as
+   * `-H "@<file>"` and the token is not printed at all. The directory must
+   * already exist.
+   */
+  readonly tokenFile?: string
 }
 
 export interface DevHttpInbound {
   /** The port actually bound. */
   readonly port: number
-  /** The bearer token of this run; random per start, never persisted. */
+  /** The bearer token of this run; random per start, gone from disk on `stop()`. */
   readonly token: string
   stop(): Promise<void>
 }
@@ -90,12 +105,15 @@ export function startDevHttpInbound(options: DevHttpInboundOptions): DevHttpInbo
   }
   const url = `http://${LOOPBACK}:${port}`
   logger.info('dev inbound listening', { url })
+  const tokenFile = saveToken(options.tokenFile, token, logger)
+  // curl reads headers from `@<file>`; the double quotes work in POSIX shells and PowerShell.
+  const header = tokenFile === undefined ? `Authorization: Bearer ${token}` : `@${tokenFile}`
   const announce = options.announce ?? ((text: string) => void process.stderr.write(text))
   announce(
     [
       `telegram-bridge dev listener on ${url} (token valid until this process exits):`,
-      `  send:    curl -X POST -H "Authorization: Bearer ${token}" --data "hello" ${url}/`,
-      `  replies: curl -N -H "Authorization: Bearer ${token}" ${url}/events`,
+      `  send:    curl -X POST -H "${header}" --data "hello" ${url}/`,
+      `  replies: curl -N -H "${header}" ${url}/events`,
       '',
     ].join('\n'),
   )
@@ -105,7 +123,27 @@ export function startDevHttpInbound(options: DevHttpInboundOptions): DevHttpInbo
     token,
     async stop() {
       await server.stop(true)
+      if (tokenFile !== undefined) rmSync(tokenFile, { force: true })
     },
+  }
+}
+
+/**
+ * Saves the `Authorization` header for curl to read. Returns the file to name
+ * in the curl lines, or undefined to print the token itself: no file was asked
+ * for, it could not be written, or its path cannot sit inside double quotes in
+ * both a POSIX shell and PowerShell.
+ */
+function saveToken(file: string | undefined, token: string, logger: Logger): string | undefined {
+  if (file === undefined || /["$`]/.test(file)) return undefined
+  try {
+    writeSecretFile(file, `Authorization: Bearer ${token}\n`)
+    return file
+  } catch (error) {
+    logger.warn('dev inbound: could not write the token file; printing the token instead', {
+      error,
+    })
+    return undefined
   }
 }
 
