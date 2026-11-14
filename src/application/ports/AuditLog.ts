@@ -34,6 +34,11 @@ export type AuditEvent =
   | 'choice.expired'
   | 'attachment.received'
   | 'attachment.refused'
+  | 'git.diff_sent'
+  | 'git.diff_not_sent'
+  | 'git.action_requested'
+  | 'status.pinned'
+  | 'status.unpinned'
 
 /** Values that are safe to persist: never tokens, codes or message text. */
 export type AuditDetails = Readonly<Record<string, string | number | boolean | null>>

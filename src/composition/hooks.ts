@@ -15,6 +15,7 @@ import type { ChatGateway } from '../application/ports/ChatGateway.ts'
 import type { Clock } from '../application/ports/Clock.ts'
 import type { HookEventSource } from '../application/ports/HookEventSource.ts'
 import type { Logger } from '../application/ports/Logger.ts'
+import type { StatusBoard } from '../application/status/StatusBoard.ts'
 import { NotifySessionEvent } from '../application/use-cases/NotifySessionEvent.ts'
 import { TrackSessionActivity } from '../application/use-cases/TrackSessionActivity.ts'
 import { NoticePolicy } from '../domain/notices/NoticePolicy.ts'
@@ -49,6 +50,8 @@ export interface HookWiringDeps {
   readonly chat: ChatGateway
   readonly tracking: SessionTracking
   readonly permissions: PermissionWiring
+  /** The pinned status (F9), fed by the same events. */
+  readonly status?: Pick<StatusBoard, 'record'>
   readonly messages: Messages
   readonly clock: Clock
   readonly logger: Logger
@@ -78,6 +81,7 @@ export function buildHookListener(deps: HookWiringDeps): HookListener {
     activity: tracking.activity,
     policy: tracking.policy,
     markResolvedLocally: (resolution) => deps.permissions.markResolvedLocally.execute(resolution),
+    ...(deps.status === undefined ? {} : { status: deps.status }),
     clock,
     logger,
   })

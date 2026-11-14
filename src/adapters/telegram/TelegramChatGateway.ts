@@ -1,9 +1,19 @@
 import { Api, GrammyError, InputFile } from 'grammy'
 import type { InlineKeyboardMarkup } from 'grammy/types'
 import type { ChatGateway, SendOptions, SendReceipt } from '../../application/ports/ChatGateway.ts'
+import type {
+  DocumentGateway,
+  DocumentReceipt,
+  OutboundDocument,
+} from '../../application/ports/DocumentGateway.ts'
 import type { ImageGateway, OutboundImage } from '../../application/ports/ImageGateway.ts'
 import type { PromptGateway, PromptKeyboard } from '../../application/ports/PromptGateway.ts'
 import type { Sleeper } from '../../application/ports/Sleeper.ts'
+import {
+  StatusFloodWaitError,
+  type StatusMessageGateway,
+  StatusMessageGoneError,
+} from '../../application/ports/StatusMessageGateway.ts'
 import type { PromptRef } from '../../domain/permissions/PermissionRequest.ts'
 import { TimerSleeper } from '../system/TimerSleeper.ts'
 import { describeTelegramError, TelegramCallError } from './redact.ts'
@@ -33,6 +43,10 @@ const MAX_RETRY_AFTER_SECONDS = 60
 
 const NO_PREVIEW = { link_preview_options: { is_disabled: true } } as const
 
+/** Bot API errors that mean the message to edit or pin no longer exists (or cannot be edited). */
+const MESSAGE_GONE =
+  /message to (?:edit|pin|unpin) not found|message can't be edited|MESSAGE_ID_INVALID/i
+
 export interface TelegramChatGatewayOptions {
   /** Replaces the network, for tests. */
   readonly fetch?: typeof fetch
@@ -46,7 +60,9 @@ export interface TelegramChatGatewayOptions {
  * Only `src/composition/outbound.ts` may construct it: everything else gets
  * it wrapped in the redacting (and, for plain text, chunking) decorators.
  */
-export class TelegramChatGateway implements ChatGateway, PromptGateway, ImageGateway {
+export class TelegramChatGateway
+  implements ChatGateway, PromptGateway, ImageGateway, DocumentGateway, StatusMessageGateway
+{
   readonly #api: Api
   readonly #uploads: Api
   readonly #token: string
@@ -121,6 +137,65 @@ export class TelegramChatGateway implements ChatGateway, PromptGateway, ImageGat
         ? this.#uploads.sendPhoto(chatId, file(), { caption })
         : this.#uploads.sendDocument(chatId, file(), { caption }),
     )
+  }
+
+  /** A text document (F8), uploaded from memory; the decorator has redacted and fitted it. */
+  async sendDocument(
+    chatId: string,
+    document: OutboundDocument,
+    caption: string,
+  ): Promise<DocumentReceipt> {
+    const bytes = new TextEncoder().encode(document.text)
+    await this.#call<unknown>(() =>
+      this.#uploads.sendDocument(chatId, new InputFile(bytes, document.filename), { caption }),
+    )
+    return { redactions: 0, bytes: bytes.length, cut: false }
+  }
+
+  /** The pinned status (F9): silent, no link preview, never retried after a 429. */
+  async sendStatus(chatId: string, text: string): Promise<PromptRef> {
+    const sent = await this.#once(() =>
+      this.#api.sendMessage(chatId, text, { ...NO_PREVIEW, disable_notification: true }),
+    )
+    return { chatId, messageId: String(sent.message_id) }
+  }
+
+  async editStatus(ref: PromptRef, text: string): Promise<void> {
+    try {
+      await this.#once(() =>
+        this.#api.editMessageText(ref.chatId, Number(ref.messageId), text, NO_PREVIEW),
+      )
+    } catch (error) {
+      if (error instanceof TelegramCallError && /message is not modified/i.test(error.message)) {
+        return
+      }
+      throw error
+    }
+  }
+
+  /** Bot API: "Notifications are always disabled in channels and private chats"; asked anyway. */
+  async pinStatus(ref: PromptRef): Promise<void> {
+    await this.#once(() =>
+      this.#api.pinChatMessage(ref.chatId, Number(ref.messageId), { disable_notification: true }),
+    )
+  }
+
+  async unpinStatus(ref: PromptRef): Promise<void> {
+    await this.#once(() => this.#api.unpinChatMessage(ref.chatId, Number(ref.messageId)))
+  }
+
+  /** One attempt: a 429 is `StatusFloodWaitError`, a vanished message `StatusMessageGoneError`. */
+  async #once<T>(send: () => Promise<T>): Promise<T> {
+    try {
+      return await send()
+    } catch (error) {
+      const wait = floodWaitSeconds(error)
+      if (wait !== undefined) throw new StatusFloodWaitError(wait * 1000)
+      if (error instanceof GrammyError && MESSAGE_GONE.test(error.description)) {
+        throw new StatusMessageGoneError()
+      }
+      throw new TelegramCallError(describeTelegramError(error, this.#token))
+    }
   }
 
   async #call<T>(send: () => Promise<T>): Promise<T> {

@@ -18,6 +18,7 @@ export interface ApiPayload {
   readonly parse_mode?: string
   readonly link_preview_options?: { readonly is_disabled?: boolean }
   readonly message_id?: number
+  readonly disable_notification?: boolean
   readonly callback_query_id?: string
   readonly file_id?: string
   readonly reply_markup?: {
@@ -283,6 +284,8 @@ export class FakeTelegramApi {
         }
       case 'sendChatAction':
       case 'answerCallbackQuery':
+      case 'pinChatMessage':
+      case 'unpinChatMessage':
         return { ok: true, result: true }
       case 'editMessageText':
         return {

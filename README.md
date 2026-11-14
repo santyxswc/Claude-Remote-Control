@@ -13,8 +13,8 @@ this project ([ADR 0001](docs/adr/0001-own-bot-per-user.md)).
 
 ## Status
 
-The MVP (flows F0 to F6) and two phase-3 flows (F7 options and skills, F10 incoming files) are
-implemented and covered by automated tests that use fakes for Telegram
+The MVP (flows F0 to F6) and four phase-3 flows (F7 options and skills, F8 git from the chat, F9
+pinned status, F10 incoming files) are implemented and covered by automated tests that use fakes for Telegram
 and for Claude Code, plus two local smoke tests for screenshots. It has **not yet been validated
 end to end against the real Telegram API or a live Claude Code session**. Several behaviours of
 Claude Code are marked "needs live verification" in the docs. The checklist for that validation
@@ -55,9 +55,15 @@ Since the MVP:
 8. **Photos and files.** Send a photo or a document (images, PDF, text and source files) and Claude
    gets the path of a private local copy. Types are checked by extension and content, the limit is
    20 MB, and files are deleted after 24 hours ([F10](docs/flows/F10.md)).
+9. **Git from the chat.** `/diff` sends a summary and the uncommitted changes as a redacted
+   `.diff` file. Commit, Revert and Open PR buttons each send Claude a fixed instruction, and
+   Claude still asks permission for every command. The bridge itself only reads the repository,
+   with git hardened against repository configuration that runs programs ([F8](docs/flows/F8.md)).
+10. **Pinned status message.** `/pin` pins a message that shows the session's state, its last
+    tool, and pending approvals and questions, edited in place from hook events and never written
+    by Claude. `/unpin` removes it ([F9](docs/flows/F9.md)).
 
-Not done yet (see [docs/roadmap.md](docs/roadmap.md)): git from the chat, a pinned status message,
-charts, session summaries to memory, voice notes, one topic per project and the live-screen Mini App. Answering Telegram
+Not done yet (see [docs/roadmap.md](docs/roadmap.md)): charts, session summaries to memory, voice notes, one topic per project and the live-screen Mini App. Answering Telegram
 calls is out of scope: the Bot API does not allow it.
 
 The MVP is one bot for one Claude Code session.
@@ -84,6 +90,7 @@ Optional tools:
 
 | Tool | Used for | Notes |
 | --- | --- | --- |
+| git | `/diff` and the git line of `/status` | Found on `PATH` at startup. Only read-only commands run ([ADR 0012](docs/adr/0012-read-only-git-adapter.md)). |
 | tmux | `/stop` also sends Escape to interrupt the running turn | Linux and macOS only, and only if Claude Code runs inside a tmux pane. Without it `/stop` blocks the next tool call. Windows has no equivalent. |
 | A Chromium-family browser (Chromium, Chrome, Brave, Edge) | `/shot <url>` | Found on `PATH` or in standard install locations; or set `TELEGRAM_BRIDGE_BROWSER`. Runs headless with a throwaway profile ([ADR 0010](docs/adr/0010-headless-browser-instead-of-playwright.md)). |
 | Linux, Wayland: `grim`, `spectacle` or `gnome-screenshot` | `/shot` (screen) | Tried in that order. |
@@ -179,12 +186,15 @@ Sent to the bot from a paired account in a private chat. Anything else, includin
 | --- | --- |
 | `/start` | Checks that the bridge is connected. |
 | `/help` | Lists the commands. |
-| `/status` | Bot, paired since, MCP connection, pending permission requests, brake state, available screenshot kinds, received files kept. |
+| `/status` | Bot, paired since, MCP connection, pending permission requests, brake state, available screenshot kinds, received files kept, and a git line (branch, ahead/behind, changed files). |
 | `/stop [reason]` | Engages the brake, denies pending permission requests and, inside tmux on Linux or macOS, sends Escape. |
 | `/resume` | Releases the brake. Claude does not restart by itself. |
 | `/shot` | Screenshot of the screen. |
 | `/shot <url>` | Screenshot of an `http`/`https` page, for example `/shot localhost:3000`. |
 | `/skills` | Lists the project's and your personal skills as buttons; a tap sends "Use the skill /name" to Claude. |
+| `/diff [path]` | Sends the uncommitted changes (staged, unstaged, untracked list) as a redacted `.diff` file, with Commit, Revert and Open PR buttons. Works while braked. |
+| `/pin` | Pins a status message that follows the session (state, last tool, pending items). Off until you send it. |
+| `/unpin` | Removes the pinned status message and stops updating it. |
 
 Permission prompts also accept `yes <id>` or `no <id>` as text (the id is shown in the prompt);
 high-risk requests can only be approved with the buttons.
@@ -219,7 +229,7 @@ All settings are optional environment variables.
 | `TELEGRAM_BRIDGE_LOCALE` | `es` | `en` for English. |
 | `TELEGRAM_BRIDGE_BROWSER` | auto-detected | Absolute path of the browser used for `/shot <url>`. An invalid value disables page captures. |
 | `TELEGRAM_BRIDGE_MAX_UPLOAD_MB` | `20` | Largest incoming file, in whole MB from 1 to 20 (20 is the Bot API download limit; it can only be lowered). Anything else is logged and 20 is used. |
-| `CLAUDE_PROJECT_DIR` | set by Claude Code | The project whose `.claude/skills` `/skills` lists. When it is unset or relative, the working directory is used if it has `.claude/` or `.git`; otherwise only personal skills are listed. |
+| `CLAUDE_PROJECT_DIR` | set by Claude Code | The project whose `.claude/skills` `/skills` lists. When it is unset or relative, the working directory is used if it has `.claude/` or `.git`; otherwise only personal skills are listed. `/diff` and the pinned status use it too (else the working directory). |
 | `TELEGRAM_BRIDGE_DEBUG` | unset | `1` prints diagnostics on stderr from the hook scripts. |
 | `TELEGRAM_BRIDGE_DEV_PORT` | unset | Development only, without a bot: a local HTTP listener (F0) that needs the bearer token it prints once to stderr, refuses browser requests (`Origin`, foreign `Host`), and does not start when a bot token is configured. Leave it unset. |
 
@@ -243,6 +253,11 @@ Read this before using it.
   aimed at Claude (prompt injection), just as pasted text can. The bridge checks types and sizes,
   never runs files, and Claude reads them only with its normal, permission-checked tools.
 - **A choice button is only an answer.** It sends text to Claude; it never approves a tool call.
+- **`/diff` sends code off the PC.** The file is redacted, but only recognizable secrets are caught.
+  The Commit, Revert and Open PR buttons are instructions, not approvals: Claude asks before each
+  command.
+- **The pinned status is activity metadata.** Project name, tool names, file names and command
+  descriptions sit in a chat Telegram can read. It is off until `/pin`.
 - **Never use `--dangerously-skip-permissions` with this.** The permission relay exists so you do
   not need it.
 - **The development-channel flag.** A custom channel is not on Anthropic's approved list, so it
@@ -283,6 +298,12 @@ Full model and known limits: [docs/threat-model.md](docs/threat-model.md) and [S
   [F10](docs/flows/F10.md#allowlist) are accepted and the content must match the extension; the
   limit is 20 MB (or `TELEGRAM_BRIDGE_MAX_UPLOAD_MB`). Received files are kept in
   `<state dir>/inbox/` for 24 hours.
+- **`/diff` says the directory is not a git work tree.** It reads `CLAUDE_PROJECT_DIR`, else the
+  directory Claude Code started in. "A filter the bridge cannot disable safely" means the
+  repository configuration has a filter driver whose name contains `=` or a line break (or a
+  filter list too long to read).
+- **The pinned status says "unknown".** No hook events have arrived: install the plugin (or the
+  hooks snippet of [F4](docs/flows/F4.md)).
 - **`/skills` shows nothing from the project.** Claude Code sets `CLAUDE_PROJECT_DIR`; started
   some other way, the channel must run in the project directory. Plugin skills are not listed.
 
@@ -304,7 +325,7 @@ bun run check   # lint, typecheck, architecture rules and tests (what CI runs)
 ```
 
 Layout: `src/domain` (pure rules), `src/application` (ports and use cases), `src/adapters`
-(Telegram, MCP, SQLite, capture, IPC, session), `src/composition` and the four entrypoints
+(Telegram, MCP, SQLite, capture, git, IPC, session), `src/composition` and the four entrypoints
 (`main.ts`, `cli.ts`, `hook.ts`, `brakeHook.ts`), `hooks/`, `skills/`, `tests/`, `docs/`. See
 [CONTRIBUTING.md](CONTRIBUTING.md) and [CLAUDE.md](CLAUDE.md).
 

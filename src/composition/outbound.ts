@@ -4,6 +4,8 @@
  *   text:    RedactingChatGateway (fits one message on request) -> ChunkingChatGateway -> route
  *   prompts: RedactingPromptGateway (fits one message, after redaction) -> route -> Telegram
  *   images:  RedactingImageGateway (caption redacted and fitted) -> route -> Telegram
+ *   docs:    RedactingDocumentGateway (content redacted, then cut between lines; caption fitted) -> route -> Telegram
+ *   status:  RedactingStatusGateway (redacted, then fitted to one message) -> route -> Telegram
  *
  * This module is the only place that constructs the raw platform gateway,
  * and `buildOutbound` is its only export, so nothing in the app can get hold
@@ -19,9 +21,16 @@ import {
 } from '../adapters/telegram/TelegramChatGateway.ts'
 import { ChunkingChatGateway } from '../application/outbound/ChunkingChatGateway.ts'
 import { RedactingChatGateway } from '../application/outbound/RedactingChatGateway.ts'
+import { RedactingDocumentGateway } from '../application/outbound/RedactingDocumentGateway.ts'
 import { RedactingImageGateway } from '../application/outbound/RedactingImageGateway.ts'
 import { RedactingPromptGateway } from '../application/outbound/RedactingPromptGateway.ts'
+import { RedactingStatusGateway } from '../application/outbound/RedactingStatusGateway.ts'
 import type { ChatGateway, SendOptions, SendReceipt } from '../application/ports/ChatGateway.ts'
+import type {
+  DocumentGateway,
+  DocumentReceipt,
+  OutboundDocument,
+} from '../application/ports/DocumentGateway.ts'
 import type { ImageGateway, OutboundImage } from '../application/ports/ImageGateway.ts'
 import type {
   PromptGateway,
@@ -29,6 +38,7 @@ import type {
   PromptOptions,
 } from '../application/ports/PromptGateway.ts'
 import type { Sleeper } from '../application/ports/Sleeper.ts'
+import type { StatusMessageGateway } from '../application/ports/StatusMessageGateway.ts'
 import type { PromptRef } from '../domain/permissions/PermissionRequest.ts'
 import { createSecretRedactor } from '../domain/redaction/secretValues.ts'
 
@@ -44,7 +54,11 @@ export interface OutboundOptions {
   readonly sleeper?: Sleeper
 }
 
-export type Outbound = ChatGateway & PromptGateway & ImageGateway
+export type Outbound = ChatGateway &
+  PromptGateway &
+  ImageGateway &
+  DocumentGateway &
+  StatusMessageGateway
 
 export function buildOutbound(options: OutboundOptions): Outbound {
   const telegram =
@@ -68,16 +82,46 @@ export function buildOutbound(options: OutboundOptions): Outbound {
     ),
     new RedactingPromptGateway(routed, redactor, TELEGRAM_MAX_MESSAGE_LENGTH),
     new RedactingImageGateway(routed, redactor, TELEGRAM_MAX_CAPTION_LENGTH),
+    new RedactingDocumentGateway(routed, redactor, TELEGRAM_MAX_CAPTION_LENGTH),
+    new RedactingStatusGateway(routed, redactor, TELEGRAM_MAX_MESSAGE_LENGTH),
   )
 }
 
 /** One object for the decorated pipelines, so callers need a single gateway. */
-class OutboundGateway implements ChatGateway, PromptGateway, ImageGateway {
+class OutboundGateway
+  implements ChatGateway, PromptGateway, ImageGateway, DocumentGateway, StatusMessageGateway
+{
   constructor(
     private readonly chat: ChatGateway,
     private readonly prompts: PromptGateway,
     private readonly images: ImageGateway,
+    private readonly documents: DocumentGateway,
+    private readonly status: StatusMessageGateway,
   ) {}
+
+  sendDocument(
+    chatId: string,
+    document: OutboundDocument,
+    caption: string,
+  ): Promise<DocumentReceipt> {
+    return this.documents.sendDocument(chatId, document, caption)
+  }
+
+  sendStatus(chatId: string, text: string): Promise<PromptRef> {
+    return this.status.sendStatus(chatId, text)
+  }
+
+  editStatus(ref: PromptRef, text: string): Promise<void> {
+    return this.status.editStatus(ref, text)
+  }
+
+  pinStatus(ref: PromptRef): Promise<void> {
+    return this.status.pinStatus(ref)
+  }
+
+  unpinStatus(ref: PromptRef): Promise<void> {
+    return this.status.unpinStatus(ref)
+  }
 
   sendText(chatId: string, text: string, options?: SendOptions): Promise<SendReceipt> {
     return this.chat.sendText(chatId, text, options)
@@ -116,9 +160,12 @@ class OutboundGateway implements ChatGateway, PromptGateway, ImageGateway {
 
 /**
  * The dev chat id goes to the dev listener; every other chat goes to
- * Telegram. Prompts (buttons) and images exist only on Telegram.
+ * Telegram. Prompts (buttons), images, documents and the pinned status exist
+ * only on Telegram.
  */
-class RoutingGateway implements ChatGateway, PromptGateway, ImageGateway {
+class RoutingGateway
+  implements ChatGateway, PromptGateway, ImageGateway, DocumentGateway, StatusMessageGateway
+{
   constructor(
     private readonly telegram: TelegramChatGateway | undefined,
     private readonly dev: ChatGateway | undefined,
@@ -146,6 +193,30 @@ class RoutingGateway implements ChatGateway, PromptGateway, ImageGateway {
 
   async sendImage(chatId: string, image: OutboundImage, caption: string): Promise<void> {
     return this.#telegram().sendImage(chatId, image, caption)
+  }
+
+  async sendDocument(
+    chatId: string,
+    document: OutboundDocument,
+    caption: string,
+  ): Promise<DocumentReceipt> {
+    return this.#telegram().sendDocument(chatId, document, caption)
+  }
+
+  async sendStatus(chatId: string, text: string): Promise<PromptRef> {
+    return this.#telegram().sendStatus(chatId, text)
+  }
+
+  async editStatus(ref: PromptRef, text: string): Promise<void> {
+    return this.#telegram().editStatus(ref, text)
+  }
+
+  async pinStatus(ref: PromptRef): Promise<void> {
+    return this.#telegram().pinStatus(ref)
+  }
+
+  async unpinStatus(ref: PromptRef): Promise<void> {
+    return this.#telegram().unpinStatus(ref)
   }
 
   #target(chatId: string): ChatGateway {

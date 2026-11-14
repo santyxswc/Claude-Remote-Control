@@ -1,6 +1,9 @@
 import type { NoticePolicy } from '../../domain/notices/NoticePolicy.ts'
+import { attentionTrigger } from '../../domain/notices/sessionNotices.ts'
+import { summarizeToolUse } from '../../domain/status/toolActivity.ts'
 import type { Clock } from '../ports/Clock.ts'
 import type { Logger } from '../ports/Logger.ts'
+import type { StatusBoard } from '../status/StatusBoard.ts'
 import type { LocalResolution } from '../use-cases/MarkPermissionResolvedLocally.ts'
 import type { NotifySessionEvent } from '../use-cases/NotifySessionEvent.ts'
 import type { TrackSessionActivity } from '../use-cases/TrackSessionActivity.ts'
@@ -12,6 +15,8 @@ export interface HookEventRouterDeps {
   readonly policy: NoticePolicy
   /** `MarkPermissionResolvedLocally`; absent where permissions are not relayed. */
   readonly markResolvedLocally?: (resolution: LocalResolution) => Promise<boolean>
+  /** The pinned status (F9); absent where it is not wired. */
+  readonly status?: Pick<StatusBoard, 'record'>
   readonly clock: Clock
   readonly logger: Logger
 }
@@ -29,7 +34,8 @@ const IDENTIFYING_FIELDS = ['command', 'file_path', 'notebook_path', 'url', 'pat
  * Validates an authenticated hook payload and hands it to the use cases:
  * `UserPromptSubmit` -> busy; `Stop` -> idle + "finished" notice;
  * `Notification` -> "needs your answer" notice; `PostToolUse` -> busy and
- * remove the buttons of a prompt answered at the terminal.
+ * remove the buttons of a prompt answered at the terminal. Each event also
+ * feeds the pinned status (F9), when it is wired.
  *
  * The MVP is one bot for one session (plan, "Restricción"), but every
  * session with the plugin's hooks reports here; session ids are only counted.
@@ -51,14 +57,16 @@ export class HookEventRouter {
   }
 
   async #dispatch(event: HookEvent): Promise<void> {
-    const { activity, notify } = this.deps
+    const { activity, notify, status } = this.deps
     switch (event.name) {
       case 'UserPromptSubmit':
         activity.turnStarted()
+        status?.record({ kind: 'turn_started' }, event.cwd)
         this.deps.policy.ownerWrote(this.deps.clock.now())
         return
       case 'Stop':
         activity.turnEnded()
+        status?.record({ kind: 'turn_ended' }, event.cwd)
         await notify.execute({
           event: 'Stop',
           cwd: event.cwd,
@@ -66,6 +74,9 @@ export class HookEventRouter {
         })
         return
       case 'Notification':
+        if (attentionTrigger(event.notificationType) !== undefined) {
+          status?.record({ kind: 'attention' }, event.cwd)
+        }
         await notify.execute({
           event: 'Notification',
           cwd: event.cwd,
@@ -75,6 +86,10 @@ export class HookEventRouter {
         return
       case 'PostToolUse': {
         activity.toolRan()
+        status?.record(
+          { kind: 'tool_ran', activity: summarizeToolUse(event.toolName, event.toolInput) },
+          event.cwd,
+        )
         const fragment = inputFragment(event.toolInput)
         await this.deps.markResolvedLocally?.({
           toolName: event.toolName,

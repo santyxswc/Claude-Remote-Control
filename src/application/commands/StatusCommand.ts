@@ -1,5 +1,5 @@
 import type { CaptureKind } from '../../domain/capture/CaptureTarget.ts'
-import type { StatusView } from '../i18n/messages.ts'
+import type { GitStatusLineView, StatusView } from '../i18n/messages.ts'
 import type { AllowedSenderStore } from '../ports/AllowedSenderStore.ts'
 import type { BrakeFlag } from '../ports/BrakeFlag.ts'
 import type { ChatCommand, CommandContext } from './ChatCommand.ts'
@@ -19,6 +19,8 @@ export interface StatusCommandDeps {
   readonly captureKinds?: () => readonly CaptureKind[]
   /** Files kept in the inbox (F10); omitted when incoming files are not wired. */
   readonly inbox?: () => Promise<{ readonly files: number; readonly bytes: number }>
+  /** One line about the project's git work tree (F8); undefined when it cannot be read. */
+  readonly git?: () => Promise<GitStatusLineView | undefined>
 }
 
 /**
@@ -44,8 +46,20 @@ export class StatusCommand implements ChatCommand {
         brake: this.#brake(),
         ...(this.deps.captureKinds === undefined ? {} : { captureKinds: this.deps.captureKinds() }),
         ...(this.deps.inbox === undefined ? {} : { inbox: await this.deps.inbox() }),
+        ...(await this.#git()),
       }),
     )
+  }
+
+  /** A git problem never breaks `/status`: the line is just left out. */
+  async #git(): Promise<{ readonly git?: GitStatusLineView }> {
+    if (this.deps.git === undefined) return {}
+    try {
+      const line = await this.deps.git()
+      return line === undefined ? {} : { git: line }
+    } catch {
+      return {}
+    }
   }
 
   #brake(): StatusView['brake'] {

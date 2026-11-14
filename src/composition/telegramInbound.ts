@@ -2,8 +2,8 @@
  * Wires the inbound side of the channel: the Chain of Responsibility from
  * Telegram polling to the session, the button-tap path and the permission
  * relay, the hook listener (F4), `/shot` (F5), the `/stop` brake (F6),
- * `ask_choice` and `/skills` (F7) and incoming files (F10), under the
- * single-poller lock.
+ * `ask_choice` and `/skills` (F7), `/diff` and its buttons (F8), the pinned
+ * status (F9) and incoming files (F10), under the single-poller lock.
  */
 import type { PermissionRequestHandler } from '../adapters/mcp/McpChannelServer.ts'
 import { NoopSessionController } from '../adapters/session/NoopSessionController.ts'
@@ -23,12 +23,15 @@ import type { InboundHandler } from '../application/pipeline/InboundStep.ts'
 import type { ChannelPort } from '../application/ports/ChannelPort.ts'
 import type { ChatGateway } from '../application/ports/ChatGateway.ts'
 import type { Clock } from '../application/ports/Clock.ts'
+import type { DocumentGateway } from '../application/ports/DocumentGateway.ts'
+import type { GitRepository } from '../application/ports/GitRepository.ts'
 import type { HookEventSource } from '../application/ports/HookEventSource.ts'
 import type { Logger } from '../application/ports/Logger.ts'
 import type { PermissionVerdictPort } from '../application/ports/PermissionVerdictPort.ts'
 import type { PromptGateway } from '../application/ports/PromptGateway.ts'
 import type { SessionController } from '../application/ports/SessionController.ts'
 import type { SkillFiles } from '../application/ports/SkillFiles.ts'
+import type { StatusMessageGateway } from '../application/ports/StatusMessageGateway.ts'
 import { SkillsMenu } from '../application/skills/SkillsMenu.ts'
 import { AuthorizeSender } from '../application/use-cases/AuthorizeSender.ts'
 import type { CaptureScreenshot } from '../application/use-cases/CaptureScreenshot.ts'
@@ -39,14 +42,19 @@ import { RequestSkill } from '../application/use-cases/RequestSkill.ts'
 import { type AttachmentWiring, buildAttachments, INBOX_SWEEP_MS } from './attachments.ts'
 import { buildBrake } from './brake.ts'
 import { buildChoices, type ChoiceWiring } from './choices.ts'
+import { buildGit } from './git.ts'
 import { buildHookListener, type HookListener, type SessionTracking } from './hooks.ts'
 import { buildPermissions, type PermissionWiring } from './permissions.ts'
+import { buildStatusMessage } from './statusMessage.ts'
 
 /** While another process polls the bot, check this often whether it has finished. */
 const LOCK_RETRY_MS = 30_000
 
 /** How often open permission requests (and choices) are checked for expiry and confirmation timeouts. */
 export const PERMISSION_SWEEP_MS = 5_000
+
+/** Shutdown waits at most this long for the "session ended" edit of the pinned status. */
+const FINAL_STATUS_EDIT_MS = 1_000
 
 /** What the inbound side needs from the MCP adapter. */
 export interface SessionChannel extends ChannelPort, PermissionVerdictPort {
@@ -58,7 +66,7 @@ export interface TelegramInboundDeps {
   readonly state: StateStores
   readonly token: string
   /** The decorated outbound gateway from `buildOutbound`. */
-  readonly chat: ChatGateway & PromptGateway
+  readonly chat: ChatGateway & PromptGateway & DocumentGateway & StatusMessageGateway
   readonly channel: SessionChannel
   readonly messages: Messages
   readonly clock: Clock
@@ -75,6 +83,10 @@ export interface TelegramInboundDeps {
   readonly attachments?: { readonly stateDir: string; readonly maxBytes: number }
   /** `/skills` (F7); without it there is no `/skills`. */
   readonly skillFiles?: SkillFiles
+  /** The project's work tree (F8); without it there is no `/diff`. */
+  readonly git?: GitRepository
+  /** The project's directory name, for `/diff` and the pinned status (F9). */
+  readonly project?: string
   /** Test seams. */
   readonly fetch?: typeof fetch
   readonly pollTimeoutSeconds?: number
@@ -120,8 +132,34 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
     onForwarded: () => {
       tracking.policy.ownerWrote(clock.now())
       tracking.activity.messageForwarded()
+      statusMessage.board.record({ kind: 'chat_message' })
     },
   })
+  // F9: fed by hooks (and the bridge's own state), edited on its own timer.
+  const statusMessage = buildStatusMessage({
+    state,
+    gateway: chat,
+    session: permissions.session,
+    pendingPermissions: permissions.pendingCount,
+    project: deps.project,
+    canEdit: isPolling,
+    messages,
+    clock,
+    logger,
+    every,
+  })
+  const git =
+    deps.git === undefined
+      ? undefined
+      : buildGit({
+          git: deps.git,
+          state,
+          outbound: chat,
+          project: deps.project,
+          messages,
+          clock,
+          logger,
+        })
   const choices = buildChoices({
     state,
     outbound: chat,
@@ -161,6 +199,7 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
           chat,
           tracking,
           permissions,
+          status: statusMessage.board,
           messages,
           clock,
           logger,
@@ -185,6 +224,8 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
     ...(deps.screenshots === undefined ? {} : { screenshots: deps.screenshots }),
     ...(skillsMenu === undefined ? {} : { skills: skillsMenu }),
     ...(attachments === undefined ? {} : { inboxUsage: attachments.usage }),
+    ...(git === undefined ? {} : { git }),
+    statusMessage,
   })
   const authorizeSender = new AuthorizeSender(state.allowed)
   const pipeline: InboundHandler = createInboundPipeline({
@@ -232,6 +273,8 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
             }),
           },
         }),
+    // A `/diff` button becomes text from the owner and runs the whole chain, like typing it.
+    ...(git === undefined ? {} : { git: git.actions(pipeline) }),
     prompts: chat,
     messages,
     clock,
@@ -263,6 +306,7 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
         })
       }
       hooks?.onPollingStarted()
+      statusMessage.update.resume()
     },
     onPollingStopped: () => hooks?.onPollingStopped(),
     logger,
@@ -300,6 +344,16 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
       cancelInboxSweep()
       // Downloads in flight are cancelled and their partial files removed, never orphaned.
       await attachments?.receive.stop()
+      await git?.diff.stop()
+      // "Session ended" on the pinned status, while we still poll; never waits long.
+      let deadline: ReturnType<typeof setTimeout> | undefined
+      await Promise.race([
+        guarded(logger, 'marking the status message ended', () => statusMessage.stop()),
+        new Promise<void>((resolve) => {
+          deadline = setTimeout(resolve, FINAL_STATUS_EDIT_MS)
+        }),
+      ])
+      clearTimeout(deadline)
       await supervisor.stop()
       await hooks?.stop()
     },

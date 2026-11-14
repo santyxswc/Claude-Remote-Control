@@ -10,24 +10,25 @@ Clean architecture with ports and adapters. Dependencies point inward only, and
 
 | Layer | Path | Contains | May import |
 | --- | --- | --- | --- |
-| Domain | `src/domain` | Pairing state machine, allowed sender, permission request and its states, risk policy, secret redaction, message splitting, token bucket, brake record, notice policy, capture URL policy, choices (F7), skill frontmatter, attachment policy and inbox retention (F10) | Nothing outside `src/domain` (no packages, no `node:` or `bun:`) |
-| Application | `src/application` | Ports (`ports/`), use cases (`use-cases/`), the inbound chain (`pipeline/`), chat commands (`commands/`), outbound decorators (`outbound/`), hook routing (`hooks/`), permission rendering, button taps (`callbacks/`), choices and skills menus, i18n catalog | `src/domain`, `src/application`, `zod` |
-| Adapters | `src/adapters/*` | `telegram`, `mcp`, `storage`, `capture`, `ipc`, `session`, `skills`, `cli`, `logging`, `system`, `dev` | Application, domain, and the platform packages |
+| Domain | `src/domain` | Pairing state machine, allowed sender, permission request and its states, risk policy, secret redaction, message splitting, token bucket, brake record, notice policy, capture URL policy, choices (F7), skill frontmatter, attachment policy and inbox retention (F10), the `/diff` path filter, git output parsers and line-boundary cuts (F8), the session status log, its update policy and the tool summary (F9) | Nothing outside `src/domain` (no packages, no `node:` or `bun:`) |
+| Application | `src/application` | Ports (`ports/`), use cases (`use-cases/`), the inbound chain (`pipeline/`), chat commands (`commands/`), outbound decorators (`outbound/`), hook routing (`hooks/`), permission rendering, button taps (`callbacks/`), choices and skills menus, git buttons and the diff document (`git/`), the pinned status board (`status/`), i18n catalog | `src/domain`, `src/application`, `zod` |
+| Adapters | `src/adapters/*` | `telegram`, `mcp`, `storage`, `capture`, `git`, `ipc`, `session`, `skills`, `cli`, `logging`, `system`, `dev` | Application, domain, and the platform packages |
 | Composition | `src/main.ts`, `src/cli.ts`, `src/hook.ts`, `src/brakeHook.ts`, `src/composition/` | Hand-written wiring, no DI container. Larger wiring sits in small factory modules under `src/composition/` that only the entrypoints use | Everything |
 
 Platform-specific APIs (`bun:sqlite`, `Bun.serve`, `node:net`) stay in adapters.
 
 ## Ports
 
-Defined in `src/application/ports/` (32 today):
+Defined in `src/application/ports/` (36 today):
 
 | Group | Ports |
 | --- | --- |
-| Chat out | `ChatGateway` (text, typing), `PromptGateway` (messages with buttons, edit, answer a tap), `ImageGateway` |
+| Chat out | `ChatGateway` (text, typing), `PromptGateway` (messages with buttons, edit, answer a tap), `ImageGateway`, `DocumentGateway` (a text file, F8), `StatusMessageGateway` (the pinned status: silent send, edit, pin, unpin, one attempt per call, F9) |
 | Chat in | `InboundPoller`, `ChannelPort` (event to the Claude Code session) |
 | Claude Code | `PermissionVerdictPort`, `SessionController` (interrupt the turn), `SessionActivity` (busy, idle, unknown), `HookEventSource` (events from hooks) |
-| State | `AllowedSenderStore`, `PairingStore`, `PermissionStore`, `ChoiceStore`, `AuditLog`, `BrakeFlag`, `BotTokenStore`, `BotIdentityStore`, `PollerLock` |
+| State | `AllowedSenderStore`, `PairingStore`, `PermissionStore`, `ChoiceStore`, `AuditLog`, `BrakeFlag`, `BotTokenStore`, `BotIdentityStore`, `PollerLock`, `StatusMessageStore` (F9) |
 | Files | `AttachmentSource` (download a file sent to the bot), `AttachmentInbox` (the private per-session inbox), `SkillFiles` (read `SKILL.md` files) |
+| Project | `GitRepository` (read-only work tree status and diffs, F8) |
 | Telegram identity | `BotIdentityProbe`, `PairingLinkBuilder` |
 | Capture | `ScreenCapturer`, `CaptureScratch` |
 | Security helpers | `SecretHasher`, `RandomSource`, `ProjectSecretsSource` |
@@ -39,7 +40,7 @@ Four composition roots, each a separate process:
 
 | Entrypoint | Started by | Role |
 | --- | --- | --- |
-| `src/main.ts` | Claude Code, as an MCP server over stdio | The channel: MCP server, Telegram polling (when it holds the lock), hook listener, permission relay, screenshots, choices and `/skills`, incoming files. stdout belongs to the MCP transport; logs go to stderr. Exits when stdin closes. |
+| `src/main.ts` | Claude Code, as an MCP server over stdio | The channel: MCP server, Telegram polling (when it holds the lock), hook listener, permission relay, screenshots, choices and `/skills`, incoming files, `/diff` (read-only git) and the pinned status. stdout belongs to the MCP transport; logs go to stderr. Exits when stdin closes. |
 | `src/cli.ts` | The user (`bun run bridge -- <cmd>`) | `init`, `pair`, `access`, `stop`, `resume`. Owns its terminal. `pair` polls Telegram itself only when no channel process holds the lock. |
 | `src/hook.ts` | Claude Code, per event (`Stop`, `Notification`, `UserPromptSubmit`, `PostToolUse`), async | Forwards a signed, trimmed copy of the event to the channel. Node builtins only. Always exits 0, nothing on stdout. |
 | `src/brakeHook.ts` | Claude Code, before every tool call (`PreToolUse`), synchronous | Opens `brake.json`. Absent: exit 0 silently. Present or unreadable: prints a JSON object that denies the call and stops Claude. |
@@ -128,7 +129,7 @@ go through `ButtonTapHandler`, which applies its own private-chat, own-chat, all
 rate-limit checks and then routes by prefix: `p1:` to `ResolvePermission` (the only path to a
 verdict), `c1:` to `AnswerChoice` (delivers the label with `HandleInboundMessage`), `k1:` to
 the `/skills` menu (`RequestSkill` feeds "Use the skill /name" back into this chain as owner
-text). Parsers are anchored and strict, so no prefix can reach another route (ADR 0011).
+text), `g1:` to `RequestGitAction` (the `/diff` buttons feed a fixed instruction back into this chain as owner text, ADR 0012). Parsers are anchored and strict, so no prefix can reach another route (ADR 0011).
 
 ## Outbound decorators
 
@@ -140,6 +141,8 @@ Decorator over the gateways, assembled only in `src/composition/outbound.ts`
 | Text | `RedactingChatGateway` then `ChunkingChatGateway` then routing then `TelegramChatGateway` (or `DevChatGateway` for the dev chat) |
 | Prompts with buttons | `RedactingPromptGateway` (redact the text and every button label, fit to one message) then routing then Telegram |
 | Images | `RedactingImageGateway` (caption redacted and fitted to 1024 characters; the image is not redacted) then routing then Telegram |
+| Documents (F8) | `RedactingDocumentGateway` (the whole text redacted, then cut between lines to the cap with a note; caption redacted and fitted to 1024) then routing then Telegram (never the dev chat) |
+| Status message (F9) | `RedactingStatusGateway` (redacted, fitted to one message) then routing then Telegram (never the dev chat) |
 
 Redaction runs before chunking so a secret cannot straddle two messages.
 
@@ -180,7 +183,7 @@ sequenceDiagram
 | --- | --- | --- |
 | Adapter | `src/adapters/telegram/TelegramChatGateway.ts`, `TelegramPoller.ts`; `src/adapters/mcp/McpChannelServer.ts` | Keep grammY and the MCP SDK behind ports |
 | Chain of Responsibility | `src/application/pipeline/*Step.ts`, `InboundStep.ts` (`buildPipeline`) | Nothing advances without authentication; each control is tested alone |
-| Decorator | `src/application/outbound/RedactingChatGateway.ts`, `ChunkingChatGateway.ts`, `RedactingPromptGateway.ts`, `RedactingImageGateway.ts` | Nothing leaves without redaction |
+| Decorator | `src/application/outbound/RedactingChatGateway.ts`, `ChunkingChatGateway.ts`, `RedactingPromptGateway.ts`, `RedactingImageGateway.ts`, `RedactingDocumentGateway.ts`, `RedactingStatusGateway.ts` | Nothing leaves without redaction |
 | Command | `src/application/commands/*Command.ts`, `CommandRegistry.ts`, `createCommandRegistry.ts` | A new command does not touch the router |
 | Strategy | `ScreenCapturer` (`src/adapters/capture/HeadlessBrowserCapturer.ts`, `CommandScreenCapturer.ts`); `RiskPolicy` (`src/domain/permissions/RiskPolicy.ts`); `SecretDetector` (`src/domain/redaction/secretDetectors.ts`); `SessionController` (`src/adapters/session/`) | Swap an algorithm without touching the use case |
 | State | `src/domain/permissions/permissionStates.ts`, `PermissionRequest.ts`; `src/domain/Pairing.ts`; `src/domain/choices/Choice.ts` | Invalid transitions, such as approving twice, throw |
@@ -201,7 +204,7 @@ are 0600 on POSIX (not enforced on Windows, where the profile ACL protects them)
 | --- | --- | --- |
 | `.env` | `TELEGRAM_BOT_TOKEN=...` | Secret: full control of the bot |
 | `bot.json` | Bot id and username from `getMe` | Not secret |
-| `bridge.sqlite` (plus `-wal`, `-shm`) | Allowlist, pairings (hashes of codes only), audit log, poller lock, open permission requests, choices (F7) | Sensitive: Telegram user ids, audit trail, and while a request or choice is open its description and input preview, or its question and labels |
+| `bridge.sqlite` (plus `-wal`, `-shm`) | Allowlist, pairings (hashes of codes only), audit log, poller lock, open permission requests, choices (F7), the pinned status message id per chat (F9) | Sensitive: Telegram user ids, audit trail, and while a request or choice is open its description and input preview, or its question and labels |
 | `hooks.key` | 32-byte secret for the hook HMAC | Secret: lets a local process forge hook events |
 | `hooks.sock` | Unix socket for hook events (Linux, macOS). Falls back to a private directory under `XDG_RUNTIME_DIR` or the temp dir when the path is too long. On Windows a named pipe is used instead and no file exists | Access to it is authenticated by the HMAC |
 | `brake.json` | The panic brake flag: who, when, optional reason | Low; a one-line reason may reveal intent. Deleting it releases the brake |
@@ -209,4 +212,6 @@ are 0600 on POSIX (not enforced on Windows, where the profile ACL protects them)
 | `inbox/<session>/<32 hex>.<ext>` | Photos and files sent from the phone (F10), 0600 in 0700 directories; `.part` while downloading. Deleted after 24 h, beyond 200 MB (oldest first), and when another session takes the poller lock | Sensitive: whatever the owner sent |
 
 The `/skills` command also reads (never writes) `<CLAUDE_CONFIG_DIR or ~/.claude>/skills/*/SKILL.md`
-and `<project>/.claude/skills/*/SKILL.md`.
+and `<project>/.claude/skills/*/SKILL.md`. `/diff` and the `/status` git line run the read-only
+git invocations of `src/adapters/git/gitInvocations.ts` in the project directory (F8, ADR 0012);
+nothing is written there.
