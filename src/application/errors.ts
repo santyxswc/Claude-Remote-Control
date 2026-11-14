@@ -65,3 +65,41 @@ export class PromptTooLongError extends ApplicationError {
     super(`The prompt is ${length} characters long once redacted`)
   }
 }
+
+/** Why a chart could not be drawn (F11). `detail` is the renderer's message, for Claude only. */
+export type ChartRenderFailure = 'invalid_spec' | 'too_big' | 'timeout' | 'failed'
+
+/** The chart renderer refused or failed. Never logged with `detail` (it may quote the spec). */
+export class ChartRenderError extends ApplicationError {
+  constructor(
+    readonly reason: ChartRenderFailure,
+    readonly detail?: string,
+  ) {
+    super(`The chart could not be rendered (${reason})`)
+  }
+}
+
+/**
+ * A prompt sent with `redaction: 'refuse'` would have had text replaced (F12):
+ * the owner would not see what is being approved.
+ */
+export class PromptRedactedError extends ApplicationError {
+  constructor(readonly count: number) {
+    super(`The prompt contains ${count} secret-like value(s)`)
+  }
+}
+
+/** Why a file in the project could not be written (F12). Never carries file contents. */
+export type ProjectFileProblem =
+  | 'outside_project'
+  | 'not_a_regular_file'
+  | 'too_large'
+  | 'changed_meanwhile'
+  | 'no_free_name'
+  | 'io'
+
+export class ProjectFileError extends ApplicationError {
+  constructor(readonly problem: ProjectFileProblem) {
+    super(`The project file could not be written (${problem})`)
+  }
+}

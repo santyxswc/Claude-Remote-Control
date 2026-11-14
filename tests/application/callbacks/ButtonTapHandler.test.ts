@@ -206,3 +206,57 @@ describe('routing by prefix', () => {
     expect(h.gateway.answers).toEqual([])
   })
 })
+
+describe('memory proposal buttons (F12)', () => {
+  async function withMemory() {
+    const h = permissionHarness()
+    await h.relay.execute(incoming())
+    const taps: unknown[] = []
+    const handler = new ButtonTapHandler({
+      authorize: new AuthorizeSender(h.allowed),
+      resolve: h.resolve,
+      memory: {
+        execute: async (input) => {
+          taps.push(input)
+          return 'approved'
+        },
+      },
+      prompts: h.gateway,
+      messages: en,
+      clock: h.clock,
+      logger: h.logger,
+    })
+    return { ...h, handler, taps }
+  }
+
+  test('m1 taps go to the memory use case, never to the permission relay', async () => {
+    const h = await withMemory()
+    await h.handler.handle(tap({ data: 'm1:abcdefghij:a', messageId: '77' }))
+    expect(h.taps).toEqual([
+      {
+        proposalId: 'abcdefghij',
+        action: 'approve',
+        sender: ALICE,
+        chatId: ALICE.id,
+        messageId: '77',
+      },
+    ])
+    expect(h.verdicts.sent).toEqual([])
+    expect(h.store.findById('abcde')?.state).toBe('pending')
+    expect(h.gateway.answers).toEqual([{ callbackId: 'cb1', text: en.memoryFeedback('approved') }])
+  })
+
+  test('a stranger’s m1 tap reaches nothing', async () => {
+    const h = await withMemory()
+    await h.handler.handle(tap({ data: 'm1:abcdefghij:a', sender: MALLORY, chatId: MALLORY.id }))
+    expect(h.taps).toEqual([])
+    expect(h.gateway.answers).toEqual([])
+  })
+
+  test('without the memory wiring an m1 tap is ignored', async () => {
+    const h = await setup()
+    await h.handler.handle(tap({ data: 'm1:abcdefghij:a' }))
+    expect(h.verdicts.sent).toEqual([])
+    expect(h.gateway.answers).toEqual([{ callbackId: 'cb1' }])
+  })
+})

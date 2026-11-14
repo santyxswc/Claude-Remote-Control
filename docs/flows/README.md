@@ -22,12 +22,14 @@ or a live Claude Code session yet; the checklist below is how that happens.
 | [F8](F8.md) | Git from the chat (`/diff`, Commit / Revert / Open PR) | Implemented. Automated acceptance (`tests/acceptance/F8.test.ts`) with the real git on temp repositories, including a hostile configuration. Live: the document on the phone and how Claude carries out each instruction pending |
 | [F9](F9.md) | Pinned status message | Implemented. Automated acceptance (`tests/acceptance/F9.test.ts`) with hook events and a fake clock. Live: silent pin and edits, 429 rate for edits pending |
 | [F10](F10.md) | Incoming images and files | Implemented. Automated acceptance (`tests/acceptance/F10.test.ts`) with a fake `getFile` and download. Live: real photo sizes, albums, `getFile` on real files pending |
+| [F11](F11.md) | Charts (`send_chart`) | Implemented. Automated acceptance (`tests/acceptance/F11.test.ts`) with the real renderer process; adapter tests for no network, no files, no code and the kill. Live: legibility on the phone and render time pending |
+| [F12](F12.md) | Session summary and memory (`/wrap`) | Implemented. Automated acceptance (`tests/acceptance/F12.test.ts`) on a temp project. Live: how Claude follows `/wrap` and the `kind="memory"` outcome pending |
 
-The other later flows (F11 to F15) are in [../roadmap.md](../roadmap.md).
+The other later flows (F13 to F15) are in [../roadmap.md](../roadmap.md).
 
 Where a flow doc and the code differ, the code wins. Known cases are listed in the architecture
 and roadmap notes; for instance F2's command list (`/start`, `/help`, `/status`) has since grown
-with `/stop`, `/resume`, `/shot`, `/skills`, `/diff`, `/pin` and `/unpin`, and F2's "only text" notice now reads "only text,
+with `/stop`, `/resume`, `/shot`, `/skills`, `/diff`, `/pin`, `/unpin` and `/wrap`, and F2's "only text" notice now reads "only text,
 photos and files" once F10 is wired.
 
 ## Live-validation checklist
@@ -310,10 +312,39 @@ Source: [F9](F9.md), manual verification. Needs the hooks (Part 5).
 - [ ] **[All]** Exit Claude Code: "session ended". Start again: the same message is edited.
   `/unpin` stops updates.
 
-### Part 12: Wrap-up
+### Part 12: Charts (F11)
+
+Source: [F11](F11.md), manual verification.
+
+- [ ] **[All]** Ask Claude for a bar chart with `send_chart`; allow the tool when prompted. A photo
+  arrives with the caption note. **Record how legible it is on the phone and how long it took.**
+- [ ] **[All]** A chart titled with a fake `ghp_` token shows `[REDACTED]`; the tool result says one
+  string was replaced.
+- [ ] **[All]** Ask for a chart of data from a URL: refused, inline data asked for. Record whether
+  Claude inlines the data by itself.
+- [ ] **[All]** Two charts at once: one "another chart is being drawn". `<stateDir>/tmp` is empty
+  afterwards; audit `chart.sent` rows have sizes and counts only.
+- [ ] **[Linux]** Record the render time on the Arch machine (the tool result arrives after it).
+
+### Part 13: Session summary and memory (F12)
+
+Source: [F12](F12.md), manual verification. In a project with a `CLAUDE.md` under git.
+
+- [ ] **[All]** `/wrap`: the chat says Claude was asked; allow `save_session_summary` and
+  `propose_memory` when prompted. **Record whether Claude calls both, with the right `chat_id`.**
+- [ ] **[All]** The summary arrives with its path, and the file exists in `docs/sessions/`.
+- [ ] **[All]** Approve the proposal: `git diff CLAUDE.md` shows only added bullets under
+  `## Session notes`. **Record that Claude does not write the lines again** after the
+  `kind="memory"` message.
+- [ ] **[All]** `/wrap` again and Reject: nothing changes. Leave one for 30 minutes: "Expired".
+- [ ] **[All]** Ask Claude to edit `CLAUDE.md` directly: the permission prompt says HIGH.
+- [ ] **[All]** `/stop`, then Approve a pending proposal: written, and the toast says Claude was not
+  told. `/wrap` while braked sends nothing.
+
+### Part 14: Wrap-up
 
 - [ ] **[All]** Record every "needs live verification" outcome in the ADRs: 0005 (findings), 0003
-  (`onFailure` on a Claude Code older than 2.1.295 ignoring the unknown key), 0009 (plugin items), 0011 (skills from the chat, albums), 0012 (git instructions), 0013 (silent status), and
+  (`onFailure` on a Claude Code older than 2.1.295 ignoring the unknown key), 0009 (plugin items), 0011 (skills from the chat, albums), 0012 (git instructions), 0013 (silent status), 0014 (charts), 0015 (`/wrap`), and
   the open points of each flow doc.
 - [ ] **[All]** Remove the throwaway directory, unset the variables, and repeat `init` and `pair` for real.
 - [ ] **[All]** Update the README: the exact install commands for the plugin route, the minimum Claude Code

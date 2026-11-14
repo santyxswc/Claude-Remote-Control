@@ -22,6 +22,11 @@ export interface PromptOptions {
   readonly overflow?: 'refuse' | 'elide'
   /** Appended when the middle is elided, to say how much is not shown (M2). */
   readonly hiddenNote?: (hidden: number) => string
+  /**
+   * `refuse`: reject with `PromptRedactedError` instead of replacing a secret,
+   * for prompts that ask the owner to approve exactly the text shown (F12).
+   */
+  readonly redaction?: 'refuse'
 }
 
 /**

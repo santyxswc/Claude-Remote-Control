@@ -4,6 +4,7 @@ import type { BrakeFlag } from '../ports/BrakeFlag.ts'
 import type { SkillsMenu } from '../skills/SkillsMenu.ts'
 import type { CaptureScreenshot } from '../use-cases/CaptureScreenshot.ts'
 import type { PinStatusMessage } from '../use-cases/PinStatusMessage.ts'
+import type { RequestSessionWrap } from '../use-cases/RequestSessionWrap.ts'
 import type { ResumeSession } from '../use-cases/ResumeSession.ts'
 import type { ShowDiff } from '../use-cases/ShowDiff.ts'
 import type { StopSession } from '../use-cases/StopSession.ts'
@@ -19,6 +20,7 @@ import { StartCommand } from './StartCommand.ts'
 import { StatusCommand } from './StatusCommand.ts'
 import { StopCommand } from './StopCommand.ts'
 import { UnpinCommand } from './UnpinCommand.ts'
+import { WrapCommand } from './WrapCommand.ts'
 
 export interface CommandRegistryDeps {
   readonly messages: Messages
@@ -40,6 +42,8 @@ export interface CommandRegistryDeps {
     readonly diff: Pick<ShowDiff, 'start'>
     readonly statusLine: () => Promise<GitStatusLineView | undefined>
   }
+  /** F12; without it there is no `/wrap`. */
+  readonly wrap?: Pick<RequestSessionWrap, 'execute'>
   /** F9; without it there is no `/pin` or `/unpin`. */
   readonly statusMessage?: {
     readonly pin: Pick<PinStatusMessage, 'execute'>
@@ -93,6 +97,14 @@ export function createCommandRegistry(deps: CommandRegistryDeps): CommandRegistr
   if (deps.git !== undefined) {
     registry.register(
       new DiffCommand(messages.commandDiffDescription, deps.git.diff, messages.diffProblem),
+    )
+  }
+  if (deps.wrap !== undefined) {
+    registry.register(
+      new WrapCommand(messages.commandWrapDescription, deps.wrap, {
+        sent: messages.wrapSent,
+        braked: messages.brakeHeldMessage,
+      }),
     )
   }
   if (deps.statusMessage !== undefined) {

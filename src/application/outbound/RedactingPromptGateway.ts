@@ -1,7 +1,7 @@
 import { ELLIPSIS, elideMiddle } from '../../domain/elideMiddle.ts'
 import type { PromptRef } from '../../domain/permissions/PermissionRequest.ts'
 import type { SecretRedactor } from '../../domain/redaction/SecretRedactor.ts'
-import { PromptTooLongError } from '../errors.ts'
+import { PromptRedactedError, PromptTooLongError } from '../errors.ts'
 import type { PromptGateway, PromptKeyboard, PromptOptions } from '../ports/PromptGateway.ts'
 
 /**
@@ -20,22 +20,23 @@ export class RedactingPromptGateway implements PromptGateway {
     private readonly maxLength: number,
   ) {}
 
-  sendPrompt(
+  /** Async, so a refusal (redaction or overflow) is a rejected promise, never a synchronous throw. */
+  async sendPrompt(
     chatId: string,
     text: string,
     keyboard: PromptKeyboard,
     options?: PromptOptions,
   ): Promise<PromptRef> {
-    return this.inner.sendPrompt(chatId, this.#fit(text, options), this.#labels(keyboard))
+    return this.inner.sendPrompt(chatId, this.#fit(text, options), this.#labels(keyboard, options))
   }
 
-  editPrompt(
+  async editPrompt(
     ref: PromptRef,
     text: string,
     keyboard: PromptKeyboard,
     options?: PromptOptions,
   ): Promise<void> {
-    return this.inner.editPrompt(ref, this.#fit(text, options), this.#labels(keyboard))
+    return this.inner.editPrompt(ref, this.#fit(text, options), this.#labels(keyboard, options))
   }
 
   answerCallback(callbackId: string, text?: string): Promise<void> {
@@ -46,14 +47,22 @@ export class RedactingPromptGateway implements PromptGateway {
   }
 
   /** Button labels can be Claude's text too (F7 choices): redacted like the message. */
-  #labels(keyboard: PromptKeyboard): PromptKeyboard {
+  #labels(keyboard: PromptKeyboard, options: PromptOptions | undefined): PromptKeyboard {
     return keyboard.map((row) =>
-      row.map((button) => ({ ...button, label: this.redactor.redact(button.label).text })),
+      row.map((button) => ({ ...button, label: this.#redact(button.label, options) })),
     )
   }
 
+  #redact(text: string, options: PromptOptions | undefined): string {
+    const result = this.redactor.redact(text)
+    if (result.count > 0 && options?.redaction === 'refuse') {
+      throw new PromptRedactedError(result.count)
+    }
+    return result.text
+  }
+
   #fit(text: string, options: PromptOptions | undefined): string {
-    const redacted = this.redactor.redact(text).text
+    const redacted = this.#redact(text, options)
     if (redacted.length <= this.maxLength) return redacted
     if (options?.overflow === 'refuse') throw new PromptTooLongError(redacted.length)
     const note = options?.hiddenNote

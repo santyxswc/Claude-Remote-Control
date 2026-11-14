@@ -125,6 +125,59 @@ export interface SkillsMenuView {
 
 export type SkillTapOutcome = 'sent' | 'not_found' | 'braked'
 
+/** What a tap on a memory proposal did (F12). */
+export type MemoryTapOutcome =
+  | 'approved'
+  | 'approved_braked'
+  | 'rejected'
+  | 'rejected_braked'
+  | 'already_resolved'
+  | 'expired'
+  | 'not_found'
+  | 'not_allowed'
+  | 'write_failed'
+
+/** Whether the session heard about a tap on a memory proposal. */
+export type MemoryNotice = 'told' | 'braked' | 'not_delivered'
+
+/** How a memory proposal ended, for the line under the lines. */
+export type MemoryStatusView =
+  | {
+      readonly status: 'approved'
+      readonly who: string
+      readonly at: string
+      /** Relative path of the file written. */
+      readonly file: string
+      /** Whether Claude was told: never while braked. */
+      readonly notice: MemoryNotice
+    }
+  | {
+      readonly status: 'rejected'
+      readonly who: string
+      readonly at: string
+      readonly notice: MemoryNotice
+    }
+  | { readonly status: 'write_failed' }
+  | { readonly status: 'expired' }
+  | { readonly status: 'cancelled' }
+
+/** A saved summary (F12): its path and, when short enough for the chat, its text. */
+export interface SummarySavedView {
+  readonly path: string
+  /** Undefined when the summary is too long to show in a few messages. */
+  readonly document: string | undefined
+  /** Characters in the summary. */
+  readonly length: number
+}
+
+/** What the session is told after a tap on a memory proposal (F12). Fixed text plus counts. */
+export interface MemorySessionView {
+  readonly outcome: 'approved' | 'rejected'
+  readonly proposalId: string
+  readonly lines: number
+  readonly file: string
+}
+
 /** Why an incoming file was not passed to Claude. */
 export interface AttachmentRefusalView {
   readonly reason:
@@ -300,6 +353,24 @@ export interface Messages {
   readonly gitInstruction: (action: GitAction) => string
   /** Short (a toast holds 200 characters). */
   readonly gitTapFeedback: (outcome: GitTapOutcome) => string
+
+  // Bot: charts (F11)
+  /** The caption under a chart; `caption` is Claude's text, already sanitized. */
+  readonly chartCaption: (caption: string | undefined) => string
+
+  // Bot: session summary and memory (F12)
+  readonly commandWrapDescription: string
+  /** The fixed instruction `/wrap` sends to the session; nothing is interpolated. */
+  readonly wrapInstruction: string
+  readonly wrapSent: string
+  /** The chat copy of a saved summary: the path, then the summary itself. */
+  readonly summarySaved: (view: SummarySavedView) => string
+  readonly memoryPrompt: (lines: readonly string[]) => string
+  readonly memoryButtons: { readonly approve: string; readonly reject: string }
+  readonly memoryStatus: (view: MemoryStatusView) => string
+  readonly memoryFeedback: (outcome: MemoryTapOutcome) => string
+  /** What the session reads after a tap; fixed text, ids and counts only. */
+  readonly memorySessionOutcome: (view: MemorySessionView) => string
 
   // Bot: pinned status (F9)
   readonly commandPinDescription: string
@@ -710,6 +781,56 @@ const ATTACHMENT_REASON_EN: Readonly<Record<AttachmentRefusalView['reason'], str
   download_failed: 'it could not be downloaded',
 }
 
+/** `/wrap` (F12): fixed text, nothing interpolated. Claude answers with the two tools. */
+const WRAP_INSTRUCTION_ES =
+  'El dueño envió /wrap en Telegram para cerrar esta sesión. 1) Escribe en Markdown un resumen breve de la sesión (qué se hizo, decisiones y por qué, pendientes y próximos pasos) y guárdalo con la herramienta save_session_summary, con el chat_id de este mensaje y un título corto. No escribas el archivo tú mismo. 2) Si hay aprendizajes duraderos que valga la pena conservar para futuras sesiones de este proyecto (convenciones, comandos, trampas), propónlos con la herramienta propose_memory: como mucho 8 líneas cortas de una sola línea cada una. No edites CLAUDE.md tú mismo: solo se escriben las líneas que el dueño apruebe con el botón. Si no hay nada que recordar, omite el paso 2 y dilo en tu respuesta.'
+
+const WRAP_INSTRUCTION_EN =
+  'The owner sent /wrap in Telegram to close this session. 1) Write a concise Markdown summary of the session (what was done, decisions and why, open items and next steps) and save it with the save_session_summary tool, using the chat_id of this message and a short title. Do not write the file yourself. 2) If there are durable lessons worth keeping for future sessions in this project (conventions, commands, pitfalls), propose them with the propose_memory tool: at most 8 short items, one line each. Do not edit CLAUDE.md yourself: only the lines the owner approves with the button are written. If nothing is worth remembering, skip step 2 and say so in your reply.'
+
+const MEMORY_FEEDBACK_ES: Readonly<Record<MemoryTapOutcome, string>> = {
+  approved: 'Escrito en CLAUDE.md.',
+  approved_braked: 'Escrito en CLAUDE.md. El freno está activo: no se avisó a Claude.',
+  rejected: 'Rechazado: no se escribió nada.',
+  rejected_braked: 'Rechazado: no se escribió nada. El freno está activo: no se avisó a Claude.',
+  already_resolved: 'Esa propuesta ya se resolvió.',
+  expired: 'Esa propuesta ya venció.',
+  not_found: 'Esa propuesta ya no existe.',
+  not_allowed: 'No autorizado.',
+  write_failed:
+    'No se pudo escribir CLAUDE.md; la propuesta sigue abierta. Los detalles están en el log.',
+}
+
+const MEMORY_FEEDBACK_EN: Readonly<Record<MemoryTapOutcome, string>> = {
+  approved: 'Written to CLAUDE.md.',
+  approved_braked: 'Written to CLAUDE.md. The brake is engaged: Claude was not told.',
+  rejected: 'Rejected: nothing was written.',
+  rejected_braked: 'Rejected: nothing was written. The brake is engaged: Claude was not told.',
+  already_resolved: 'That proposal was already resolved.',
+  expired: 'That proposal has expired.',
+  not_found: 'That proposal no longer exists.',
+  not_allowed: 'Not authorized.',
+  write_failed:
+    'CLAUDE.md could not be written; the proposal is still open. Details are in the log.',
+}
+
+const MEMORY_NOTICE_ES: Readonly<Record<MemoryNotice, string>> = {
+  told: '',
+  braked: ' El freno estaba activo: no se avisó a Claude.',
+  not_delivered: ' No se pudo avisar a Claude.',
+}
+
+const MEMORY_NOTICE_EN: Readonly<Record<MemoryNotice, string>> = {
+  told: '',
+  braked: ' The brake was engaged: Claude was not told.',
+  not_delivered: ' Claude could not be told.',
+}
+
+/** The proposed lines as the file will hold them, one bullet each. */
+function memoryLines(lines: readonly string[]): string {
+  return lines.map((line) => `- ${line}`).join('\n')
+}
+
 const BRAKE_SOURCE_ES = { telegram: ' desde Telegram', terminal: ' desde la terminal', unknown: '' }
 const BRAKE_SOURCE_EN = { telegram: ' from Telegram', terminal: ' from the terminal', unknown: '' }
 
@@ -985,6 +1106,49 @@ const es: Messages = {
     `➡️ Enviado a Claude: ${GIT_ACTION_ES[action]}. Aprueba o deniega sus herramientas como siempre.`,
   gitInstruction: (action) => GIT_INSTRUCTION_ES[action],
   gitTapFeedback: (outcome) => GIT_TAP_ES[outcome],
+
+  chartCaption: (caption) =>
+    lines(
+      caption === undefined || caption === '' ? '📊 Gráfica' : `📊 ${caption}`,
+      '⚠️ Los secretos reconocibles en los textos de la gráfica se censuraron antes de dibujarla; el resto de la imagen no pasa por la censura.',
+    ),
+
+  commandWrapDescription: 'pide a Claude un resumen de la sesión y propuestas para CLAUDE.md',
+  wrapInstruction: WRAP_INSTRUCTION_ES,
+  wrapSent:
+    '🧾 Le pedí a Claude que resuma la sesión. El resumen se guarda en docs/sessions/ y las líneas para CLAUDE.md llegan con botones: nada entra sin tu aprobación.',
+  summarySaved: (v) =>
+    v.document === undefined
+      ? `🧾 Resumen guardado en ${shown(v.path, 200)} (archivo local, sin censura). Tiene ${v.length} caracteres, demasiados para el chat: ábrelo en el PC.`
+      : `🧾 Resumen guardado en ${shown(v.path, 200)} (archivo local, sin censura):\n\n${v.document}`,
+  memoryPrompt: (memory) =>
+    lines(
+      '🧠 Claude propone agregar estas líneas a CLAUDE.md (bajo "## Session notes"):',
+      '',
+      memoryLines(memory),
+      '',
+      'Aprobar escribe exactamente estas líneas. Rechazar no escribe nada.',
+    ),
+  memoryButtons: { approve: '✅ Aprobar', reject: '❌ Rechazar' },
+  memoryStatus: (v) => {
+    switch (v.status) {
+      case 'approved':
+        return `✅ Aprobado por ${v.who} (${v.at}): escrito en ${shown(v.file, 200)}.${MEMORY_NOTICE_ES[v.notice]}`
+      case 'rejected':
+        return `❌ Rechazado por ${v.who} (${v.at}): no se escribió nada.${MEMORY_NOTICE_ES[v.notice]}`
+      case 'write_failed':
+        return '⚠️ No se pudo escribir CLAUDE.md. Puedes volver a intentarlo.'
+      case 'expired':
+        return '⌛ Venció sin respuesta: no se escribió nada.'
+      case 'cancelled':
+        return '🚫 Cancelada: la sesión que la propuso ya terminó. No se escribió nada.'
+    }
+  },
+  memoryFeedback: (outcome) => MEMORY_FEEDBACK_ES[outcome],
+  memorySessionOutcome: (v) =>
+    v.outcome === 'approved'
+      ? `El dueño aprobó la propuesta de memoria ${v.proposalId}: sus ${v.lines} líneas se agregaron a ${v.file} bajo "## Session notes". No las vuelvas a escribir.`
+      : `El dueño rechazó la propuesta de memoria ${v.proposalId}: no se escribió nada en ${v.file}. No la escribas por tu cuenta.`,
 
   commandPinDescription: 'fija un mensaje de estado que sigue a la sesión',
   commandUnpinDescription: 'quita el mensaje de estado fijado',
@@ -1307,6 +1471,49 @@ const en: Messages = {
     `➡️ Sent to Claude: ${GIT_ACTION_EN[action]}. Approve or deny its tool calls as usual.`,
   gitInstruction: (action) => GIT_INSTRUCTION_EN[action],
   gitTapFeedback: (outcome) => GIT_TAP_EN[outcome],
+
+  chartCaption: (caption) =>
+    lines(
+      caption === undefined || caption === '' ? '📊 Chart' : `📊 ${caption}`,
+      "⚠️ Recognizable secrets in the chart's text were redacted before drawing; the rest of the image does not go through redaction.",
+    ),
+
+  commandWrapDescription: 'asks Claude for a session summary and proposals for CLAUDE.md',
+  wrapInstruction: WRAP_INSTRUCTION_EN,
+  wrapSent:
+    '🧾 Asked Claude to summarize the session. The summary is saved in docs/sessions/ and lines for CLAUDE.md arrive with buttons: nothing goes in without your approval.',
+  summarySaved: (v) =>
+    v.document === undefined
+      ? `🧾 Summary saved to ${shown(v.path, 200)} (local file, not redacted). It has ${v.length} characters, too many for the chat: open it on the PC.`
+      : `🧾 Summary saved to ${shown(v.path, 200)} (local file, not redacted):\n\n${v.document}`,
+  memoryPrompt: (memory) =>
+    lines(
+      '🧠 Claude proposes adding these lines to CLAUDE.md (under "## Session notes"):',
+      '',
+      memoryLines(memory),
+      '',
+      'Approve writes exactly these lines. Reject writes nothing.',
+    ),
+  memoryButtons: { approve: '✅ Approve', reject: '❌ Reject' },
+  memoryStatus: (v) => {
+    switch (v.status) {
+      case 'approved':
+        return `✅ Approved by ${v.who} (${v.at}): written to ${shown(v.file, 200)}.${MEMORY_NOTICE_EN[v.notice]}`
+      case 'rejected':
+        return `❌ Rejected by ${v.who} (${v.at}): nothing was written.${MEMORY_NOTICE_EN[v.notice]}`
+      case 'write_failed':
+        return '⚠️ CLAUDE.md could not be written. You can try again.'
+      case 'expired':
+        return '⌛ Expired without an answer: nothing was written.'
+      case 'cancelled':
+        return '🚫 Cancelled: the session that proposed it has ended. Nothing was written.'
+    }
+  },
+  memoryFeedback: (outcome) => MEMORY_FEEDBACK_EN[outcome],
+  memorySessionOutcome: (v) =>
+    v.outcome === 'approved'
+      ? `The owner approved memory proposal ${v.proposalId}: its ${v.lines} lines were added to ${v.file} under "## Session notes". Do not write them again.`
+      : `The owner rejected memory proposal ${v.proposalId}: nothing was written to ${v.file}. Do not write it yourself.`,
 
   commandPinDescription: 'pins a status message that follows the session',
   commandUnpinDescription: 'removes the pinned status message',

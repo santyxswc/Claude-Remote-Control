@@ -108,6 +108,25 @@ const MIGRATIONS: readonly string[] = [
     created_at INTEGER NOT NULL
   );
   `,
+  // F12: lines proposed for CLAUDE.md with `propose_memory`. The lines stay
+  // only while the proposal is pending.
+  `
+  CREATE TABLE memory_proposals (
+    id TEXT PRIMARY KEY CHECK (length(id) = 10 AND id NOT GLOB '*[^a-z2-7]*'),
+    session TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    lines TEXT NOT NULL,
+    line_count INTEGER NOT NULL CHECK (line_count BETWEEN 1 AND 8),
+    state TEXT NOT NULL
+      CHECK (state IN ('pending', 'approved', 'rejected', 'expired', 'cancelled')),
+    created_at INTEGER NOT NULL,
+    resolved_by TEXT,
+    closed_at INTEGER,
+    prompt TEXT,
+    revision INTEGER NOT NULL
+  );
+  CREATE INDEX memory_proposals_by_state ON memory_proposals (state, created_at);
+  `,
 ]
 
 export const SCHEMA_VERSION = MIGRATIONS.length

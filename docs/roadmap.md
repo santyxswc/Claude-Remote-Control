@@ -10,7 +10,7 @@ a verifiable exit condition.
 | 0 · Technical proof | F0 | Minimal channel working | The three unknowns are answered in an ADR | Implemented. Unknowns answered from the docs in [ADR 0005](adr/0005-f0-findings.md); live confirmation pending |
 | 1 · MVP | F1 to F6 | Remote control usable every day | You spend a day away from home without returning to the keyboard, with tests green | Implemented and covered by automated tests. Not yet validated live: see [flows/README.md](flows/README.md) |
 | 2 · Publication | none new | Public repo with README, demo and `SECURITY.md` | Another person installs it on their PC following only the README | Docs done (README in English and Spanish, `SECURITY.md`, `CONTRIBUTING.md`, architecture, flow index, plugin skills). Pending: license, demo, and the plugin install route confirmed live |
-| 3 · Productivity | F7 to F12 | Option buttons, git, status, files, charts and memory | A full session ends with an approved summary saved | In progress. F7 ([options and skills](flows/F7.md)), F8 ([git from the chat](flows/F8.md)), F9 ([pinned status](flows/F9.md)) and F10 ([incoming files](flows/F10.md)) implemented with automated acceptance; live validation pending. F11 and F12 not started |
+| 3 · Productivity | F7 to F12 | Option buttons, git, status, files, charts and memory | A full session ends with an approved summary saved | Implemented. F7 ([options and skills](flows/F7.md)), F8 ([git from the chat](flows/F8.md)), F9 ([pinned status](flows/F9.md)), F10 ([incoming files](flows/F10.md)), F11 ([charts](flows/F11.md)) and F12 ([summary and memory](flows/F12.md)) implemented with automated acceptance; live validation pending (the exit condition, a full session ending with an approved summary, needs a live run) |
 | 4 · Voice and multi-project | F13, F14 | Daemon and one topic per session | Two simultaneous sessions work without crossed messages | Not started |
 | 5 · Mini App | F15 | Live screen inside Telegram | The tunnel passes a written security review | Not started |
 
@@ -27,8 +27,8 @@ Each one adds commands, MCP tools or an adapter without changing the core.
 | F8 · Git from the chat | `/diff` sends the diff as a file, with Commit, Revert and Open PR buttons | Each button is a predefined instruction that goes through the permission relay. **Implemented** ([F8](flows/F8.md), [ADR 0012](adr/0012-read-only-git-adapter.md)): the bridge only reads, with hardened git invocations; the diff is redacted before it is capped |
 | F9 · Pinned status message | A pinned message shows the current task and pending items, edited live | Fed by hooks, not by Claude. **Implemented** ([F9](flows/F9.md), [ADR 0013](adr/0013-status-fed-by-hooks.md)): `/pin` and `/unpin`, debounced edits on their own lane; no todo list (hooks do not reliably expose it) |
 | F10 · Incoming images and files | A photo or file is saved to a temporary folder and reaches Claude as a path | Size limit and an allowlist of types. **Implemented** ([F10](flows/F10.md)): extension and magic-byte checks, a private per-session inbox with a 24 h TTL and a 200 MB quota |
-| F11 · Charts | A `send_chart` tool takes a Vega-Lite spec and sends the PNG | No browser: Vega to SVG, then resvg to PNG |
-| F12 · Summary and memory | On session close or `/wrap`, Claude summarizes into `docs/sessions/` and proposes lines for `CLAUDE.md` | Nothing enters `CLAUDE.md` without your approval by button |
+| F11 · Charts | A `send_chart` tool takes a Vega-Lite spec and sends the PNG | No browser: Vega to SVG, then resvg to PNG. **Implemented** ([F11](flows/F11.md), [ADR 0014](adr/0014-chart-renderer.md)): inline data only, a child process with an empty environment, a refuse-all loader, the expression interpreter and a 20 s kill; strings redacted before drawing |
+| F12 · Summary and memory | On session close or `/wrap`, Claude summarizes into `docs/sessions/` and proposes lines for `CLAUDE.md` | Nothing enters `CLAUDE.md` without your approval by button. **Implemented** ([F12](flows/F12.md), [ADR 0015](adr/0015-session-summary-and-memory.md)) for `/wrap` only: a `SessionEnd` hook cannot make Claude do work, so there is no automatic wrap. The bridge writes both files; Claude editing memory files directly is high risk |
 | F13 · Voice notes | whisper.cpp transcribes locally; the bot shows the text and asks for confirmation | Confirming stops a transcription error from becoming a command |
 | F14 · Multi-project | A daemon owns the bot. A group with topics has one topic per session | Routed by topic, always authenticated by sender |
 | F15 · Live-screen Mini App | A button opens the Mini App with a stream of the app in development | Validates `initData` with HMAC, read-only, needs an optional HTTPS tunnel. It is the only flow that exposes the PC to the internet, so it is optional and last |
@@ -62,7 +62,10 @@ plugin skills in `/skills`, and voice or video files (F13 covers voice notes).
   - how Claude carries out the `/diff` button instructions, and how the document shows on the
     phone ([F8](flows/F8.md));
   - that the pinned status's send, pin and edits never notify, and how often edits hit 429
-    ([F9](flows/F9.md)).
+    ([F9](flows/F9.md));
+  - chart legibility on the phone and render time on the owner's machine ([F11](flows/F11.md));
+  - how Claude follows `/wrap` (both tools, the right `chat_id`) and the `kind="memory"`
+    outcome ([F12](flows/F12.md)).
 - [ ] **Plugin distribution.** The repository has no `marketplace.json`; decide whether to add one
   (a marketplace entry would make `/plugin install` possible). It would still need the
   development-channel flag, since only `claude-plugins-official` and an organization's

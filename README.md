@@ -13,8 +13,8 @@ this project ([ADR 0001](docs/adr/0001-own-bot-per-user.md)).
 
 ## Status
 
-The MVP (flows F0 to F6) and four phase-3 flows (F7 options and skills, F8 git from the chat, F9
-pinned status, F10 incoming files) are implemented and covered by automated tests that use fakes for Telegram
+The MVP (flows F0 to F6) and the six phase-3 flows (F7 options and skills, F8 git from the chat, F9
+pinned status, F10 incoming files, F11 charts, F12 session summary and memory) are implemented and covered by automated tests that use fakes for Telegram
 and for Claude Code, plus two local smoke tests for screenshots. It has **not yet been validated
 end to end against the real Telegram API or a live Claude Code session**. Several behaviours of
 Claude Code are marked "needs live verification" in the docs. The checklist for that validation
@@ -62,8 +62,16 @@ Since the MVP:
 10. **Pinned status message.** `/pin` pins a message that shows the session's state, its last
     tool, and pending approvals and questions, edited in place from hook events and never written
     by Claude. `/unpin` removes it ([F9](docs/flows/F9.md)).
+11. **Charts.** A `send_chart` tool turns a Vega-Lite spec with inline data into a PNG photo.
+    There is no browser: it is drawn in a short-lived child process that cannot load URLs or
+    files and is killed after 20 seconds; text in the chart is redacted before drawing
+    ([F11](docs/flows/F11.md)).
+12. **Session summary and memory.** `/wrap` asks Claude to summarize the session, which the
+    bridge saves to `docs/sessions/` and sends to the chat, and to propose lines for
+    `CLAUDE.md`. You approve or reject them with a button; only approved lines are written, by
+    the bridge, under `## Session notes` ([F12](docs/flows/F12.md)).
 
-Not done yet (see [docs/roadmap.md](docs/roadmap.md)): charts, session summaries to memory, voice notes, one topic per project and the live-screen Mini App. Answering Telegram
+Not done yet (see [docs/roadmap.md](docs/roadmap.md)): voice notes, one topic per project and the live-screen Mini App. Answering Telegram
 calls is out of scope: the Bot API does not allow it.
 
 The MVP is one bot for one Claude Code session.
@@ -195,6 +203,7 @@ Sent to the bot from a paired account in a private chat. Anything else, includin
 | `/diff [path]` | Sends the uncommitted changes (staged, unstaged, untracked list) as a redacted `.diff` file, with Commit, Revert and Open PR buttons. Works while braked. |
 | `/pin` | Pins a status message that follows the session (state, last tool, pending items). Off until you send it. |
 | `/unpin` | Removes the pinned status message and stops updating it. |
+| `/wrap` | Asks Claude to save a session summary in `docs/sessions/` and to propose lines for `CLAUDE.md`, which you approve with buttons. Sends nothing while braked. |
 
 Permission prompts also accept `yes <id>` or `no <id>` as text (the id is shown in the prompt);
 high-risk requests can only be approved with the buttons.
@@ -256,6 +265,13 @@ Read this before using it.
 - **`/diff` sends code off the PC.** The file is redacted, but only recognizable secrets are caught.
   The Commit, Revert and Open PR buttons are instructions, not approvals: Claude asks before each
   command.
+- **Charts are images.** Strings in the spec are redacted before drawing, but numbers are not,
+  and the rest of the image bypasses redaction like a screenshot. The renderer cannot load URLs
+  or files.
+- **`CLAUDE.md` changes only with your tap.** `propose_memory` shows every line; a line that
+  redaction would change is refused. Claude editing `CLAUDE.md`, `AGENTS.md` or `.claude/`
+  directly is a high-risk permission prompt. The saved session summary is a local file and is not
+  redacted (its chat copy is).
 - **The pinned status is activity metadata.** Project name, tool names, file names and command
   descriptions sit in a chat Telegram can read. It is off until `/pin`.
 - **Never use `--dangerously-skip-permissions` with this.** The permission relay exists so you do
@@ -266,7 +282,7 @@ Read this before using it.
 - **Allow the reply tool, nothing broader.** Add `mcp__telegram-bridge__reply` to the allow rules of
   your Claude Code settings (as a plugin the name has the form `mcp__plugin_<plugin>_<server>__reply`;
   check it with `/permissions`). Do not pre-allow `send_screenshot`: each capture should stay a
-  decision. `ask_choice` only posts a question to your own chat; allowing it is your call. Details: [docs/flows/F3.md](docs/flows/F3.md#the-reply-tool-needs-its-own-permission).
+  decision. `ask_choice`, `send_chart`, `save_session_summary` and `propose_memory` only post to your own chat (and the last two write `docs/sessions/` or, after your tap, `CLAUDE.md`); allowing them is your call. Details: [docs/flows/F3.md](docs/flows/F3.md#the-reply-tool-needs-its-own-permission).
 - Strangers get no reply and no event. Only private chats from allowlisted user ids are accepted.
 
 Full model and known limits: [docs/threat-model.md](docs/threat-model.md) and [SECURITY.md](SECURITY.md).
@@ -325,7 +341,7 @@ bun run check   # lint, typecheck, architecture rules and tests (what CI runs)
 ```
 
 Layout: `src/domain` (pure rules), `src/application` (ports and use cases), `src/adapters`
-(Telegram, MCP, SQLite, capture, git, IPC, session), `src/composition` and the four entrypoints
+(Telegram, MCP, SQLite, capture, chart, project files, git, IPC, session), `src/composition` and the four entrypoints
 (`main.ts`, `cli.ts`, `hook.ts`, `brakeHook.ts`), `hooks/`, `skills/`, `tests/`, `docs/`. See
 [CONTRIBUTING.md](CONTRIBUTING.md) and [CLAUDE.md](CLAUDE.md).
 
