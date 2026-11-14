@@ -13,8 +13,8 @@ this project ([ADR 0001](docs/adr/0001-own-bot-per-user.md)).
 
 ## Status
 
-The MVP (flows F0 to F6) and the six phase-3 flows (F7 options and skills, F8 git from the chat, F9
-pinned status, F10 incoming files, F11 charts, F12 session summary and memory) are implemented and covered by automated tests that use fakes for Telegram
+The MVP (flows F0 to F6), the six phase-3 flows (F7 options and skills, F8 git from the chat, F9
+pinned status, F10 incoming files, F11 charts, F12 session summary and memory) and F13 voice notes are implemented and covered by automated tests that use fakes for Telegram
 and for Claude Code, plus two local smoke tests for screenshots. It has **not yet been validated
 end to end against the real Telegram API or a live Claude Code session**. Several behaviours of
 Claude Code are marked "needs live verification" in the docs. The checklist for that validation
@@ -70,8 +70,12 @@ Since the MVP:
     bridge saves to `docs/sessions/` and sends to the chat, and to propose lines for
     `CLAUDE.md`. You approve or reject them with a button; only approved lines are written, by
     the bridge, under `## Session notes` ([F12](docs/flows/F12.md)).
+13. **Voice notes** (optional). A voice note is transcribed on your PC by whisper.cpp; you see
+    the exact text with Send and Discard, and only Send passes it to Claude, as if typed. The
+    audio is deleted right away and never leaves the PC. Off until you install `whisper-cli`
+    and ffmpeg and set `TELEGRAM_BRIDGE_WHISPER_MODEL` ([F13](docs/flows/F13.md)).
 
-Not done yet (see [docs/roadmap.md](docs/roadmap.md)): voice notes, one topic per project and the live-screen Mini App. Answering Telegram
+Not done yet (see [docs/roadmap.md](docs/roadmap.md)): one topic per project and the live-screen Mini App. Answering Telegram
 calls is out of scope: the Bot API does not allow it.
 
 The MVP is one bot for one Claude Code session.
@@ -105,6 +109,7 @@ Optional tools:
 | Linux, X11: `maim`, `scrot` or ImageMagick `import` | `/shot` (screen) | Tried in that order. |
 | macOS | `/shot` (screen) | Uses the built-in `screencapture`. |
 | Windows | `/shot` (screen) | Uses the built-in Windows PowerShell; captures every monitor. |
+| whisper.cpp (`whisper-cli`), ffmpeg and a ggml model | Voice notes | Off until `TELEGRAM_BRIDGE_WHISPER_MODEL` is set. Arch: `pacman -S whisper-cpp ffmpeg`; macOS: `brew install whisper.cpp ffmpeg`; others and Windows: [F13](docs/flows/F13.md#setup). ffmpeg is required: whisper.cpp does not read Opus. |
 
 On Linux the channel must run inside the graphical session to capture the screen. Page captures
 need no display.
@@ -208,7 +213,8 @@ Sent to the bot from a paired account in a private chat. Anything else, includin
 Permission prompts also accept `yes <id>` or `no <id>` as text (the id is shown in the prompt);
 high-risk requests can only be approved with the buttons.
 
-Photos and documents are saved and forwarded as a path ([F10](docs/flows/F10.md)); voice, video
+Photos and documents are saved and forwarded as a path ([F10](docs/flows/F10.md)); voice notes are
+transcribed and confirmed when configured ([F13](docs/flows/F13.md)); audio files, video
 and stickers are refused with a notice. When Claude asks with `ask_choice`, tap an option, or tap
 "Other…" and type your answer as the next message.
 
@@ -238,6 +244,10 @@ All settings are optional environment variables.
 | `TELEGRAM_BRIDGE_LOCALE` | `es` | `en` for English. |
 | `TELEGRAM_BRIDGE_BROWSER` | auto-detected | Absolute path of the browser used for `/shot <url>`. An invalid value disables page captures. |
 | `TELEGRAM_BRIDGE_MAX_UPLOAD_MB` | `20` | Largest incoming file, in whole MB from 1 to 20 (20 is the Bot API download limit; it can only be lowered). Anything else is logged and 20 is used. |
+| `TELEGRAM_BRIDGE_WHISPER_MODEL` | unset | Absolute path of a ggml whisper model. Unset: voice notes are off (the bot says how to turn them on). |
+| `TELEGRAM_BRIDGE_WHISPER` | `whisper-cli` on `PATH` | Absolute path of `whisper-cli`. A relative or missing path is refused. |
+| `TELEGRAM_BRIDGE_WHISPER_LANGUAGE` | `auto` | Spoken language for whisper (`es`, `en`, ...); anything else falls back to `auto`. |
+| `TELEGRAM_BRIDGE_FFMPEG` | `ffmpeg` on `PATH` | Absolute path of `ffmpeg`, which converts the note (Opus) for whisper. |
 | `CLAUDE_PROJECT_DIR` | set by Claude Code | The project whose `.claude/skills` `/skills` lists. When it is unset or relative, the working directory is used if it has `.claude/` or `.git`; otherwise only personal skills are listed. `/diff` and the pinned status use it too (else the working directory). |
 | `TELEGRAM_BRIDGE_DEBUG` | unset | `1` prints diagnostics on stderr from the hook scripts. |
 | `TELEGRAM_BRIDGE_DEV_PORT` | unset | Development only, without a bot: a local HTTP listener (F0) that needs the bearer token it prints once to stderr, refuses browser requests (`Origin`, foreign `Host`), and does not start when a bot token is configured. Leave it unset. |
@@ -272,6 +282,10 @@ Read this before using it.
   redaction would change is refused. Claude editing `CLAUDE.md`, `AGENTS.md` or `.claude/`
   directly is a high-risk permission prompt. The saved session summary is a local file and is not
   redacted (its chat copy is).
+- **Voice notes are confirmed text.** Transcription runs on your PC; the audio is deleted at
+  once and never sent anywhere. Claude only gets the text you saw and sent, and a transcript
+  never runs a bridge command or answers a permission prompt. A transcript the chat would
+  redact cannot be sent. ffmpeg and whisper.cpp parse the audio without a sandbox.
 - **The pinned status is activity metadata.** Project name, tool names, file names and command
   descriptions sit in a chat Telegram can read. It is off until `/pin`.
 - **Never use `--dangerously-skip-permissions` with this.** The permission relay exists so you do
@@ -314,6 +328,9 @@ Full model and known limits: [docs/threat-model.md](docs/threat-model.md) and [S
   [F10](docs/flows/F10.md#allowlist) are accepted and the content must match the extension; the
   limit is 20 MB (or `TELEGRAM_BRIDGE_MAX_UPLOAD_MB`). Received files are kept in
   `<state dir>/inbox/` for 24 hours.
+- **A voice note is refused.** The reply names the missing setting or the reason. Notes are
+  limited to 3 minutes and 2 MB; the transcript must fit one message. Setup per OS:
+  [F13](docs/flows/F13.md#setup).
 - **`/diff` says the directory is not a git work tree.** It reads `CLAUDE_PROJECT_DIR`, else the
   directory Claude Code started in. "A filter the bridge cannot disable safely" means the
   repository configuration has a filter driver whose name contains `=` or a line break (or a

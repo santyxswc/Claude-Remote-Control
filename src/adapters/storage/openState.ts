@@ -13,6 +13,7 @@ import { SqlitePairingStore } from './SqlitePairingStore.ts'
 import { SqlitePermissionStore } from './SqlitePermissionStore.ts'
 import { SqlitePollerLock } from './SqlitePollerLock.ts'
 import { SqliteStatusMessageStore } from './SqliteStatusMessageStore.ts'
+import { SqliteVoiceTranscriptStore } from './SqliteVoiceTranscriptStore.ts'
 import { DATABASE_FILE, openDatabase } from './sqlite.ts'
 import { ensureStateDir } from './stateDir.ts'
 
@@ -30,6 +31,8 @@ export interface StateStores {
   readonly statusMessages: SqliteStatusMessageStore
   /** Lines proposed for `CLAUDE.md` with `propose_memory` (F12). */
   readonly memoryProposals: SqliteMemoryProposalStore
+  /** Voice transcripts waiting for Send or Discard (F13). */
+  readonly voiceTranscripts: SqliteVoiceTranscriptStore
   readonly tokens: DotEnvTokenStore
   readonly identities: JsonBotIdentityStore
   /** The panic brake (F6): a file, so the PreToolUse hook can read it without SQLite. */
@@ -52,6 +55,7 @@ export function openState(
     choices: new SqliteChoiceStore(db),
     statusMessages: new SqliteStatusMessageStore(db),
     memoryProposals: new SqliteMemoryProposalStore(db),
+    voiceTranscripts: new SqliteVoiceTranscriptStore(db),
     lock: new SqlitePollerLock(db, { pid: process.pid, clock, isProcessAlive }),
     tokens: new DotEnvTokenStore(stateDir, env),
     identities: new JsonBotIdentityStore(stateDir),

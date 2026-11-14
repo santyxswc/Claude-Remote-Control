@@ -18,6 +18,8 @@ import type { RequestGitAction } from '../use-cases/RequestGitAction.ts'
 import type { RequestSkill } from '../use-cases/RequestSkill.ts'
 import type { ResolveMemoryProposal } from '../use-cases/ResolveMemoryProposal.ts'
 import type { ResolvePermission } from '../use-cases/ResolvePermission.ts'
+import type { ResolveVoiceTranscript } from '../use-cases/ResolveVoiceTranscript.ts'
+import { parseVoiceCallback } from '../voice/voiceCallbackData.ts'
 import type { InboundCallback } from './InboundCallback.ts'
 
 export interface ButtonTapHandlerDeps {
@@ -35,6 +37,8 @@ export interface ButtonTapHandlerDeps {
   readonly git?: Pick<RequestGitAction, 'execute'>
   /** Memory proposal buttons (`m1:`, F12): Approve writes the shown lines; without it they are ignored. */
   readonly memory?: Pick<ResolveMemoryProposal, 'execute'>
+  /** Voice transcript buttons (`v1:`, F13): Send feeds the shown text to the transcript chain; without it they are ignored. */
+  readonly voice?: Pick<ResolveVoiceTranscript, 'execute'>
   /** Only `answerCallback` is used here. */
   readonly prompts: Pick<PromptGateway, 'answerCallback'>
   readonly messages: Messages
@@ -58,7 +62,7 @@ interface AuthorizedTap {
  * Allowlisted taps are always answered so the client's spinner stops.
  *
  * Then the data is routed by its versioned prefix. Each parser is strict and
- * anchored and the prefixes differ, so a choice, skill, git or memory button can never
+ * anchored and the prefixes differ, so a choice, skill, git, memory or voice button can never
  * reach `ResolvePermission`, nor a permission button anything else.
  * Unknown data is answered with nothing.
  */
@@ -135,6 +139,10 @@ export class ButtonTapHandler {
     const memory = parseMemoryCallback(data)
     if (memory !== undefined && this.deps.memory !== undefined) {
       return messages.memoryFeedback(await this.deps.memory.execute({ ...memory, ...tap }))
+    }
+    const voice = parseVoiceCallback(data)
+    if (voice !== undefined && this.deps.voice !== undefined) {
+      return messages.voiceFeedback(await this.deps.voice.execute({ ...voice, ...tap }))
     }
     logger.warn('ignored a button tap with unknown data', { senderId: tap.sender.id })
     return undefined

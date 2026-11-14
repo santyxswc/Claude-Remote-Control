@@ -212,6 +212,35 @@ describe('toInboundMessage', () => {
     expect(sender?.displayName).toBe('Santiago (@santi_real), id 12345678 999 di , [2K line')
   })
 
+  test('voice notes carry the file id, duration and size; audio and round videos do not', () => {
+    const chat = { id: 5, type: 'private', first_name: 'x' }
+    const from = { id: 5, is_bot: false, first_name: 'x' }
+    const voice = {
+      message_id: 2,
+      date: 0,
+      chat,
+      from,
+      voice: {
+        file_id: 'v',
+        file_unique_id: 'u',
+        duration: 7,
+        mime_type: 'audio/ogg',
+        file_size: 9,
+      },
+    } as unknown as Message
+    expect(toInboundMessage(voice)).toMatchObject({
+      text: undefined,
+      voice: { fileId: 'v', duration: 7, size: 9 },
+    })
+    for (const other of [
+      { audio: { file_id: 'a', file_unique_id: 'u', duration: 7 } },
+      { video_note: { file_id: 'n', file_unique_id: 'u', length: 1, duration: 7 } },
+    ]) {
+      const message = { message_id: 3, date: 0, chat, from, ...other } as unknown as Message
+      expect(toInboundMessage(message).voice).toBeUndefined()
+    }
+  })
+
   test('groups keep their (negative) chat id and kind; bots are not senders', () => {
     const message = {
       ...base,

@@ -61,7 +61,9 @@ test('migrates a database from before F9', () => {
   const old = openDatabase(path)
   old.run('DROP TABLE status_messages')
   old.run('DROP TABLE memory_proposals')
-  old.run(`PRAGMA user_version = ${SCHEMA_VERSION - 2}`)
+  old.run('DROP TABLE voice_transcripts')
+  // Before F9: migrations 1 to 3 (F9 is migration 4).
+  old.run('PRAGMA user_version = 3')
   old.close()
   state = openState(dir, {}, new FakeClock())
   expect(state.db.query('PRAGMA user_version').get()).toEqual({ user_version: SCHEMA_VERSION })

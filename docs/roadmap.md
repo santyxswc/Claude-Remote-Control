@@ -11,7 +11,7 @@ a verifiable exit condition.
 | 1 · MVP | F1 to F6 | Remote control usable every day | You spend a day away from home without returning to the keyboard, with tests green | Implemented and covered by automated tests. Not yet validated live: see [flows/README.md](flows/README.md) |
 | 2 · Publication | none new | Public repo with README, demo and `SECURITY.md` | Another person installs it on their PC following only the README | Docs done (README in English and Spanish, `SECURITY.md`, `CONTRIBUTING.md`, architecture, flow index, plugin skills). Pending: license, demo, and the plugin install route confirmed live |
 | 3 · Productivity | F7 to F12 | Option buttons, git, status, files, charts and memory | A full session ends with an approved summary saved | Implemented. F7 ([options and skills](flows/F7.md)), F8 ([git from the chat](flows/F8.md)), F9 ([pinned status](flows/F9.md)), F10 ([incoming files](flows/F10.md)), F11 ([charts](flows/F11.md)) and F12 ([summary and memory](flows/F12.md)) implemented with automated acceptance; live validation pending (the exit condition, a full session ending with an approved summary, needs a live run) |
-| 4 · Voice and multi-project | F13, F14 | Daemon and one topic per session | Two simultaneous sessions work without crossed messages | Not started |
+| 4 · Voice and multi-project | F13, F14 | Voice notes, daemon and one topic per session | Two simultaneous sessions work without crossed messages | F13 ([voice notes](flows/F13.md)) implemented with automated acceptance; live validation pending. F14 not started |
 | 5 · Mini App | F15 | Live screen inside Telegram | The tunnel passes a written security review | Not started |
 
 The shared bot with a relay is not on the roadmap. If it is ever picked up, it starts with its own
@@ -29,14 +29,15 @@ Each one adds commands, MCP tools or an adapter without changing the core.
 | F10 · Incoming images and files | A photo or file is saved to a temporary folder and reaches Claude as a path | Size limit and an allowlist of types. **Implemented** ([F10](flows/F10.md)): extension and magic-byte checks, a private per-session inbox with a 24 h TTL and a 200 MB quota |
 | F11 · Charts | A `send_chart` tool takes a Vega-Lite spec and sends the PNG | No browser: Vega to SVG, then resvg to PNG. **Implemented** ([F11](flows/F11.md), [ADR 0014](adr/0014-chart-renderer.md)): inline data only, a child process with an empty environment, a refuse-all loader, the expression interpreter and a 20 s kill; strings redacted before drawing |
 | F12 · Summary and memory | On session close or `/wrap`, Claude summarizes into `docs/sessions/` and proposes lines for `CLAUDE.md` | Nothing enters `CLAUDE.md` without your approval by button. **Implemented** ([F12](flows/F12.md), [ADR 0015](adr/0015-session-summary-and-memory.md)) for `/wrap` only: a `SessionEnd` hook cannot make Claude do work, so there is no automatic wrap. The bridge writes both files; Claude editing memory files directly is high risk |
-| F13 · Voice notes | whisper.cpp transcribes locally; the bot shows the text and asks for confirmation | Confirming stops a transcription error from becoming a command |
+| F13 · Voice notes | whisper.cpp transcribes locally; the bot shows the text and asks for confirmation | Confirming stops a transcription error from becoming a command. **Implemented** ([F13](flows/F13.md), [ADR 0016](adr/0016-voice-notes.md)): opt-in, ffmpeg plus `whisper-cli` with fixed argv and deadlines, the audio deleted at once, Send only when the text was shown unredacted, and a transcript never runs a bridge command or a verdict |
 | F14 · Multi-project | A daemon owns the bot. A group with topics has one topic per session | Routed by topic, always authenticated by sender |
 | F15 · Live-screen Mini App | A button opens the Mini App with a stream of the app in development | Validates `initData` with HMAC, read-only, needs an optional HTTPS tunnel. It is the only flow that exposes the PC to the internet, so it is optional and last |
 
 Other items called out in the docs and not scheduled: the `privacy: minimal` mode (notices without
 code or paths), TOTP for high-risk approvals and an inactivity lock, `/status` showing the
 hook-fed busy state, an XDG desktop portal capture strategy, a `PlaywrightCapturer`, listing
-plugin skills in `/skills`, and voice or video files (F13 covers voice notes).
+plugin skills in `/skills`, audio files and round videos (F13 covers voice notes only), and a
+`/status` line for voice notes.
 
 ## Open decisions (need the owner)
 
@@ -65,7 +66,9 @@ plugin skills in `/skills`, and voice or video files (F13 covers voice notes).
     ([F9](flows/F9.md));
   - chart legibility on the phone and render time on the owner's machine ([F11](flows/F11.md));
   - how Claude follows `/wrap` (both tools, the right `chat_id`) and the `kind="memory"`
-    outcome ([F12](flows/F12.md)).
+    outcome ([F12](flows/F12.md));
+  - real `whisper-cli` and `ffmpeg` on each OS, transcription times, the Windows binaries
+    ([F13](flows/F13.md)).
 - [ ] **Plugin distribution.** The repository has no `marketplace.json`; decide whether to add one
   (a marketplace entry would make `/plugin install` possible). It would still need the
   development-channel flag, since only `claude-plugins-official` and an organization's

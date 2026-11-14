@@ -3,8 +3,8 @@
  * Telegram polling to the session, the button-tap path and the permission
  * relay, the hook listener (F4), `/shot` (F5), the `/stop` brake (F6),
  * `ask_choice` and `/skills` (F7), `/diff` and its buttons (F8), the pinned
- * status (F9), incoming files (F10) and `/wrap` with its memory proposals
- * (F12), under the single-poller lock.
+ * status (F9), incoming files (F10), `/wrap` with its memory proposals
+ * (F12) and voice notes (F13), under the single-poller lock.
  */
 import type { PermissionRequestHandler } from '../adapters/mcp/McpChannelServer.ts'
 import { NoopSessionController } from '../adapters/session/NoopSessionController.ts'
@@ -19,8 +19,11 @@ import { createCommandRegistry } from '../application/commands/createCommandRegi
 import { isUrgentCommand } from '../application/commands/parseCommand.ts'
 import type { Messages } from '../application/i18n/messages.ts'
 import { createInboundPipeline } from '../application/pipeline/createInboundPipeline.ts'
-import { createSessionSteps } from '../application/pipeline/createSessionSteps.ts'
-import type { InboundHandler } from '../application/pipeline/InboundStep.ts'
+import {
+  createSessionSteps,
+  createTranscriptSteps,
+} from '../application/pipeline/createSessionSteps.ts'
+import { buildPipeline, type InboundHandler } from '../application/pipeline/InboundStep.ts'
 import type { ChannelPort } from '../application/ports/ChannelPort.ts'
 import type { ChatGateway } from '../application/ports/ChatGateway.ts'
 import type { Clock } from '../application/ports/Clock.ts'
@@ -33,6 +36,7 @@ import type { PromptGateway } from '../application/ports/PromptGateway.ts'
 import type { SessionController } from '../application/ports/SessionController.ts'
 import type { SkillFiles } from '../application/ports/SkillFiles.ts'
 import type { StatusMessageGateway } from '../application/ports/StatusMessageGateway.ts'
+import type { Transcriber } from '../application/ports/Transcriber.ts'
 import { SkillsMenu } from '../application/skills/SkillsMenu.ts'
 import { AuthorizeSender } from '../application/use-cases/AuthorizeSender.ts'
 import type { CaptureScreenshot } from '../application/use-cases/CaptureScreenshot.ts'
@@ -40,6 +44,7 @@ import { ClaimPairing } from '../application/use-cases/ClaimPairing.ts'
 import { HandleInboundMessage } from '../application/use-cases/HandleInboundMessage.ts'
 import { ListSkills } from '../application/use-cases/ListSkills.ts'
 import { RequestSkill } from '../application/use-cases/RequestSkill.ts'
+import { TokenBucket } from '../domain/TokenBucket.ts'
 import { type AttachmentWiring, buildAttachments, INBOX_SWEEP_MS } from './attachments.ts'
 import { buildBrake } from './brake.ts'
 import { buildChoices, type ChoiceWiring } from './choices.ts'
@@ -48,6 +53,7 @@ import { buildHookListener, type HookListener, type SessionTracking } from './ho
 import { buildMemory, type MemoryWiring } from './memory.ts'
 import { buildPermissions, type PermissionWiring } from './permissions.ts'
 import { buildStatusMessage } from './statusMessage.ts'
+import { buildVoice, type VoiceWiring } from './voice.ts'
 
 /** While another process polls the bot, check this often whether it has finished. */
 const LOCK_RETRY_MS = 30_000
@@ -83,6 +89,12 @@ export interface TelegramInboundDeps {
   readonly screenshots?: CaptureScreenshot
   /** Incoming photos and files (F10): the state directory for the inbox, and the size cap. */
   readonly attachments?: { readonly stateDir: string; readonly maxBytes: number }
+  /**
+   * Voice notes (F13): the transcriber (whisper.cpp, or one that says why it
+   * is off). Needs `attachments` for the state directory and the size cap;
+   * without it voice notes get the "only text" notice.
+   */
+  readonly voice?: { readonly transcriber: Transcriber }
   /** `/skills` (F7); without it there is no `/skills`. */
   readonly skillFiles?: SkillFiles
   /** The project's work tree (F8); without it there is no `/diff`. */
@@ -209,6 +221,22 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
           logger,
           ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
         })
+  const voice: VoiceWiring | undefined =
+    deps.voice === undefined || deps.attachments === undefined
+      ? undefined
+      : buildVoice({
+          stateDir: deps.attachments.stateDir,
+          session: permissions.session,
+          token: deps.token,
+          transcriber: deps.voice.transcriber,
+          state,
+          outbound: chat,
+          messages,
+          maxUploadBytes: deps.attachments.maxBytes,
+          clock,
+          logger,
+          ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
+        })
   const listSkills =
     deps.skillFiles === undefined ? undefined : new ListSkills(deps.skillFiles, logger)
   const skillsMenu =
@@ -253,6 +281,8 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
     statusMessage,
   })
   const authorizeSender = new AuthorizeSender(state.allowed)
+  // One message budget per sender, shared by typed text and confirmed voice transcripts.
+  const limiter = new TokenBucket()
   const pipeline: InboundHandler = createInboundPipeline({
     claimPairing: new ClaimPairing({
       pairings: state.pairings,
@@ -274,12 +304,28 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
       commands,
       forward,
       botUsername,
+      limiter,
       permissionVerdicts: permissions.verdictStep,
       brake: state.brake,
       choiceAnswers: choices.answerWithText,
       ...(attachments === undefined ? {} : { attachments: attachments.receive }),
+      ...(voice === undefined ? {} : { voice: voice.receive }),
     }),
   })
+  // F13: a confirmed transcript is owner text, but never a command or a permission verdict.
+  const transcriptChain: InboundHandler = buildPipeline(
+    createTranscriptSteps({
+      chat,
+      messages,
+      logger,
+      clock,
+      audit: state.audit,
+      forward,
+      limiter,
+      brake: state.brake,
+      choiceAnswers: choices.answerWithText,
+    }),
+  )
   const taps = new ButtonTapHandler({
     authorize: authorizeSender,
     resolve: permissions.resolve,
@@ -301,6 +347,7 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
     // A `/diff` button becomes text from the owner and runs the whole chain, like typing it.
     ...(git === undefined ? {} : { git: git.actions(pipeline) }),
     ...(memory === undefined ? {} : { memory: memory.resolve }),
+    ...(voice === undefined ? {} : { voice: voice.resolve(transcriptChain) }),
     prompts: chat,
     messages,
     clock,
@@ -336,6 +383,12 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
           await attachments.sweep.execute()
         })
       }
+      if (voice !== undefined) {
+        void guarded(logger, 'cancelling orphaned voice transcripts', () =>
+          voice.expire.expireOrphans(),
+        )
+        void guarded(logger, 'sweeping voice workspaces', () => voice.sweepScratch())
+      }
       hooks?.onPollingStarted()
       statusMessage.update.resume()
     },
@@ -355,6 +408,7 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
       await permissions.expire.execute()
       await choices.expire.execute()
       await memory?.expire.execute()
+      await voice?.expire.execute()
     }).finally(() => {
       sweeping = false
     })
@@ -377,6 +431,8 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
       cancelInboxSweep()
       // Downloads in flight are cancelled and their partial files removed, never orphaned.
       await attachments?.receive.stop()
+      // A transcription in flight is killed and its audio removed.
+      await voice?.receive.stop()
       await git?.diff.stop()
       // "Session ended" on the pinned status, while we still poll; never waits long.
       let deadline: ReturnType<typeof setTimeout> | undefined
