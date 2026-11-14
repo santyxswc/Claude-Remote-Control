@@ -13,9 +13,33 @@ export interface ClaimantView {
   readonly id: string
 }
 
+/** Facts `/status` reports; only what the process actually knows. */
+export interface StatusView {
+  readonly botUsername: string | undefined
+  /** ISO date-time the sender was paired, if known. */
+  readonly pairedSince: string | undefined
+  /** Whether the MCP connection to Claude Code is open. */
+  readonly sessionConnected: boolean
+}
+
+export interface CommandHelp {
+  readonly name: string
+  readonly description: string
+}
+
 export interface Messages {
   // Bot replies
   readonly pairingClaimedReply: string
+  readonly startGreeting: string
+  readonly help: (commands: readonly CommandHelp[]) => string
+  readonly status: (view: StatusView) => string
+  readonly commandStartDescription: string
+  readonly commandHelpDescription: string
+  readonly commandStatusDescription: string
+  readonly slowDown: string
+  readonly onlyTextSupported: string
+  readonly queued: string
+  readonly deliveryFailed: string
 
   // CLI: general
   readonly usage: string
@@ -87,9 +111,31 @@ function who(c: ClaimantView): string {
   return `${c.displayName}${handle}, id ${c.id}`
 }
 
+function commandList(commands: readonly CommandHelp[]): string {
+  return commands.map((c) => `/${c.name} - ${c.description}`).join('\n')
+}
+
 const es: Messages = {
   pairingClaimedReply:
     'Código recibido. Confirma el emparejamiento en la terminal de tu PC para continuar.',
+  startGreeting:
+    'Puente conectado. Lo que escribas aquí llega a tu sesión de Claude Code. /help muestra los comandos.',
+  help: (commands) =>
+    `Comandos:\n${commandList(commands)}\n\nCualquier otro texto, incluidos otros /comandos, se envía a Claude.`,
+  status: (v) =>
+    [
+      `Bot: ${v.botUsername === undefined ? 'desconocido' : `@${v.botUsername}`}`,
+      `Emparejado desde: ${v.pairedSince ?? 'desconocido'}`,
+      `Conexión MCP con Claude Code: ${v.sessionConnected ? 'abierta' : 'cerrada'}`,
+      'No es posible saber desde aquí si la sesión cargó este canal ni si Claude está ocupado.',
+    ].join('\n'),
+  commandStartDescription: 'comprueba que el puente está conectado',
+  commandHelpDescription: 'muestra esta ayuda',
+  commandStatusDescription: 'estado del puente',
+  slowDown: 'Vas muy rápido: los mensajes de más se descartaron. Espera unos segundos.',
+  onlyTextSupported: 'Por ahora solo se admite texto. Ese mensaje no se envió a Claude.',
+  queued: 'Claude está ocupado: tu mensaje quedó en cola y lo verá al terminar.',
+  deliveryFailed: 'No se pudo entregar el mensaje a la sesión de Claude Code.',
 
   usage: USAGE_ES,
   unknownCommand: 'Comando o argumentos no válidos.',
@@ -138,6 +184,24 @@ const es: Messages = {
 
 const en: Messages = {
   pairingClaimedReply: 'Code received. Confirm the pairing in the terminal on your PC to continue.',
+  startGreeting:
+    'Bridge connected. What you write here reaches your Claude Code session. /help lists the commands.',
+  help: (commands) =>
+    `Commands:\n${commandList(commands)}\n\nAny other text, other /commands included, goes to Claude.`,
+  status: (v) =>
+    [
+      `Bot: ${v.botUsername === undefined ? 'unknown' : `@${v.botUsername}`}`,
+      `Paired since: ${v.pairedSince ?? 'unknown'}`,
+      `MCP connection to Claude Code: ${v.sessionConnected ? 'open' : 'closed'}`,
+      'From here it cannot be known whether the session loaded this channel or whether Claude is busy.',
+    ].join('\n'),
+  commandStartDescription: 'check that the bridge is connected',
+  commandHelpDescription: 'show this help',
+  commandStatusDescription: 'bridge status',
+  slowDown: 'You are going too fast: the extra messages were dropped. Wait a few seconds.',
+  onlyTextSupported: 'Only text is supported for now. That message was not sent to Claude.',
+  queued: 'Claude is busy: your message is queued and Claude will see it when done.',
+  deliveryFailed: 'The message could not be delivered to the Claude Code session.',
 
   usage: USAGE_EN,
   unknownCommand: 'Invalid command or arguments.',

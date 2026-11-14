@@ -1,16 +1,17 @@
 import { describe, expect, mock, test } from 'bun:test'
 import { messagesFor } from '../../../src/application/i18n/messages.ts'
 import { AuthenticateSenderStep } from '../../../src/application/pipeline/AuthenticateSenderStep.ts'
-import { DiscardStep } from '../../../src/application/pipeline/DiscardStep.ts'
 import type { InboundMessage } from '../../../src/application/pipeline/InboundMessage.ts'
 import { buildPipeline, type InboundStep } from '../../../src/application/pipeline/InboundStep.ts'
 import { PairingClaimStep } from '../../../src/application/pipeline/PairingClaimStep.ts'
 import { PrivateChatOnlyStep } from '../../../src/application/pipeline/PrivateChatOnlyStep.ts'
 import { AuthorizeSender } from '../../../src/application/use-cases/AuthorizeSender.ts'
 import { allowSender } from '../../../src/domain/AllowedSender.ts'
+import { DROPPED_LOG_WINDOW_MS } from '../../../src/domain/inboundLimits.ts'
 import {
   ALICE,
   FakeChatGateway,
+  FakeClock,
   InMemoryAllowedSenders,
   MALLORY,
   MemoryLogger,
@@ -22,6 +23,7 @@ const es = messagesFor('es')
 function message(overrides: Partial<InboundMessage> = {}): InboundMessage {
   return {
     chatId: ALICE.id,
+    messageId: '10',
     chatKind: 'private',
     sender: ALICE,
     text: 'hello',
@@ -55,7 +57,7 @@ describe('buildPipeline', () => {
 describe('PrivateChatOnlyStep', () => {
   test('passes private chats on', async () => {
     const next = nextSpy()
-    await new PrivateChatOnlyStep(new MemoryLogger()).handle(message(), next)
+    await new PrivateChatOnlyStep(new MemoryLogger(), new FakeClock()).handle(message(), next)
     expect(next).toHaveBeenCalledTimes(1)
   })
 
@@ -64,7 +66,10 @@ describe('PrivateChatOnlyStep', () => {
     async (chatKind) => {
       const next = nextSpy()
       const logger = new MemoryLogger()
-      await new PrivateChatOnlyStep(logger).handle(message({ chatKind, text: 'secret plan' }), next)
+      await new PrivateChatOnlyStep(logger, new FakeClock()).handle(
+        message({ chatKind, text: 'secret plan' }),
+        next,
+      )
       expect(next).not.toHaveBeenCalled()
       expect(logger.text).not.toContain('secret plan')
     },
@@ -143,7 +148,12 @@ describe('AuthenticateSenderStep', () => {
     const allowed = new InMemoryAllowedSenders()
     allowed.add(allowSender(ALICE, 0))
     const logger = new MemoryLogger()
-    return { logger, step: new AuthenticateSenderStep(new AuthorizeSender(allowed), logger) }
+    const clock = new FakeClock()
+    return {
+      logger,
+      clock,
+      step: new AuthenticateSenderStep(new AuthorizeSender(allowed), logger, clock),
+    }
   }
 
   test('passes allowlisted senders on', async () => {
@@ -181,8 +191,47 @@ describe('AuthenticateSenderStep', () => {
   })
 })
 
-test('DiscardStep never calls next', async () => {
-  const next = nextSpy()
-  await new DiscardStep().handle(message(), next)
-  expect(next).not.toHaveBeenCalled()
+describe('dropped-message logging is throttled', () => {
+  test('a stranger flooding the bot yields one line per minute, then a suppressed count', async () => {
+    const allowed = new InMemoryAllowedSenders()
+    const logger = new MemoryLogger()
+    const clock = new FakeClock()
+    const step = new AuthenticateSenderStep(new AuthorizeSender(allowed), logger, clock)
+    const flood = message({ sender: MALLORY, chatId: MALLORY.id, text: 'spam' })
+
+    for (let i = 0; i < 500; i++) await step.handle(flood, nextSpy())
+    expect(logger.entries).toHaveLength(1)
+
+    clock.advance(DROPPED_LOG_WINDOW_MS)
+    await step.handle(flood, nextSpy())
+    expect(logger.entries).toHaveLength(2)
+    expect(logger.entries[1]?.fields).toEqual({ senderId: MALLORY.id, suppressed: 499 })
+    expect(logger.text).not.toContain('spam')
+  })
+
+  test('each stranger gets its own line', async () => {
+    const logger = new MemoryLogger()
+    const step = new AuthenticateSenderStep(
+      new AuthorizeSender(new InMemoryAllowedSenders()),
+      logger,
+      new FakeClock(),
+    )
+    await step.handle(message({ sender: MALLORY }), nextSpy())
+    await step.handle(message({ sender: ALICE }), nextSpy())
+    expect(logger.entries).toHaveLength(2)
+  })
+
+  test('a busy group is logged once per window', async () => {
+    const logger = new MemoryLogger()
+    const clock = new FakeClock()
+    const step = new PrivateChatOnlyStep(logger, clock)
+    const group = message({ chatKind: 'group', chatId: '-100' })
+    for (let i = 0; i < 50; i++) await step.handle(group, nextSpy())
+    clock.advance(DROPPED_LOG_WINDOW_MS)
+    await step.handle(group, nextSpy())
+    expect(logger.entries.map((e) => e.fields)).toEqual([
+      { chatKind: 'group' },
+      { chatKind: 'group', suppressed: 49 },
+    ])
+  })
 })

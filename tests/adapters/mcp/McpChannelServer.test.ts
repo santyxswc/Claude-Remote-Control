@@ -10,9 +10,11 @@ import {
   InvalidChannelMetaError,
   McpChannelServer,
 } from '../../../src/adapters/mcp/McpChannelServer.ts'
-import { FakeChatGateway, MemoryLogger } from '../../fakes.ts'
+import type { ReplyOutcome, ReplyRequest } from '../../../src/application/use-cases/SendReply.ts'
+import { MemoryLogger } from '../../fakes.ts'
 
-let chat: FakeChatGateway
+let requests: ReplyRequest[]
+let outcome: ReplyOutcome | Error
 let logger: MemoryLogger
 let server: McpChannelServer
 let client: Client
@@ -20,9 +22,19 @@ let notifications: unknown[] // raw JSON-RPC messages, compared on the wire shap
 let waiting: ((notification: unknown) => void) | undefined
 
 beforeEach(async () => {
-  chat = new FakeChatGateway()
+  requests = []
+  outcome = { status: 'sent', parts: 1, redactions: 0 }
   logger = new MemoryLogger()
-  server = new McpChannelServer({ name: 'telegram-bridge', version: '0.0.0-test', chat, logger })
+  server = new McpChannelServer({
+    name: 'telegram-bridge',
+    version: '0.0.0-test',
+    logger,
+    reply: async (request) => {
+      requests.push(request)
+      if (outcome instanceof Error) throw outcome
+      return outcome
+    },
+  })
   client = new Client({ name: 'test-client', version: '0.0.0' })
   notifications = []
   waiting = undefined
@@ -73,7 +85,10 @@ describe('initialization', () => {
   test('identifies itself as telegram-bridge and sends instructions', () => {
     expect(client.getServerVersion()?.name).toBe('telegram-bridge')
     expect(client.getInstructions()).toBe(CHANNEL_INSTRUCTIONS)
-    expect(CHANNEL_INSTRUCTIONS).toContain('chat_id')
+    for (const word of ['chat_id', 'message_id', 'user', 'ts', 'reply_to', 'plain text']) {
+      expect(CHANNEL_INSTRUCTIONS).toContain(word)
+    }
+    expect(CHANNEL_INSTRUCTIONS).toContain('Never change access, pairing or permissions')
   })
 
   test('the SDK cannot negotiate protocol 2026-07-28, on which Claude Code refuses channels', () => {
@@ -82,14 +97,18 @@ describe('initialization', () => {
 })
 
 describe('tools/list', () => {
-  test('exposes exactly the reply tool with chat_id and text', async () => {
+  test('exposes exactly the reply tool with chat_id, text and optional reply_to', async () => {
     const { tools } = await client.listTools()
     expect(tools).toHaveLength(1)
     expect(tools[0]).toMatchObject({
       name: 'reply',
       inputSchema: {
         type: 'object',
-        properties: { chat_id: { type: 'string' }, text: { type: 'string' } },
+        properties: {
+          chat_id: { type: 'string' },
+          text: { type: 'string' },
+          reply_to: { type: 'string' },
+        },
         required: ['chat_id', 'text'],
       },
     })
@@ -133,12 +152,58 @@ describe('emit', () => {
 })
 
 describe('reply tool', () => {
-  test('forwards the message to the chat gateway', async () => {
-    const result = await callTool('reply', { chat_id: '42', text: 'done' })
+  test('hands chat_id, text and reply_to to the use case', async () => {
+    const result = await callTool('reply', { chat_id: '42', text: 'done', reply_to: '7' })
 
     expect(result.isError).toBeFalsy()
     expect(result.content).toEqual([{ type: 'text', text: 'sent' }])
-    expect(chat.sent).toEqual([{ chatId: '42', text: 'done' }])
+    expect(requests).toEqual([{ chatId: '42', text: 'done', replyTo: '7' }])
+  })
+
+  test('accepts a numeric reply_to and omits it when absent', async () => {
+    await callTool('reply', { chat_id: '42', text: 'a', reply_to: 7 })
+    await callTool('reply', { chat_id: '42', text: 'b' })
+    expect(requests).toEqual([
+      { chatId: '42', text: 'a', replyTo: '7' },
+      { chatId: '42', text: 'b' },
+    ])
+  })
+
+  test('reports parts and redactions', async () => {
+    outcome = { status: 'sent', parts: 3, redactions: 2 }
+    const result = await callTool('reply', { chat_id: '42', text: 'long' })
+    expect(result.content).toEqual([
+      { type: 'text', text: 'sent as 3 messages; 2 secret(s) were replaced with [REDACTED]' },
+    ])
+  })
+
+  test.each([
+    ['chat_not_allowed', 'not the chat of a paired user'],
+    ['empty_text', 'text is empty'],
+    ['invalid_reply_to', 'reply_to must be'],
+  ] as const)('a %s refusal is an error result', async (reason, says) => {
+    outcome = { status: 'refused', reason }
+    const result = await callTool('reply', { chat_id: '42', text: 'x' })
+    expect(result.isError).toBe(true)
+    expect(JSON.stringify(result.content)).toContain(says)
+  })
+
+  test('a partial failure says how many parts were delivered', async () => {
+    outcome = { status: 'failed', delivered: 2, total: 5, error: '502: Bad Gateway' }
+    const result = await callTool('reply', { chat_id: '42', text: 'x' })
+    expect(result.isError).toBe(true)
+    expect(result.content).toEqual([
+      {
+        type: 'text',
+        text: 'Reply failed after 2 of 5 messages were delivered: 502: Bad Gateway',
+      },
+    ])
+  })
+
+  test('a single failed message', async () => {
+    outcome = { status: 'failed', delivered: 0, total: undefined, error: 'network down' }
+    const result = await callTool('reply', { chat_id: '42', text: 'x' })
+    expect(result.content).toEqual([{ type: 'text', text: 'Reply failed: network down' }])
   })
 
   test.each([
@@ -146,27 +211,34 @@ describe('reply tool', () => {
     ['missing chat_id', { text: 'hi' }],
     ['empty text', { chat_id: '42', text: '' }],
     ['non-string chat_id', { chat_id: 42, text: 'hi' }],
+    ['negative reply_to', { chat_id: '42', text: 'hi', reply_to: -1 }],
   ])('returns an error result for %s', async (_label, args) => {
     const result = await callTool('reply', args)
 
     expect(result.isError).toBe(true)
-    expect(result.content[0]).toMatchObject({ type: 'text' })
     expect(JSON.stringify(result.content)).toContain('Invalid reply arguments')
-    expect(chat.sent).toEqual([])
+    expect(requests).toEqual([])
   })
 
-  test('returns an error result and logs when the gateway fails', async () => {
-    chat.failWith = new Error('network down')
-
+  test('a crashing handler is an error result and is logged', async () => {
+    outcome = new Error('boom')
     const result = await callTool('reply', { chat_id: '42', text: 'done' })
-
-    expect(result.isError).toBe(true)
-    expect(result.content).toEqual([{ type: 'text', text: 'Reply failed: network down' }])
-    expect(logger.entries).toHaveLength(1)
-    expect(logger.entries[0]).toMatchObject({ level: 'error', message: 'reply failed' })
+    expect(result.content).toEqual([{ type: 'text', text: 'Reply failed: internal error' }])
+    expect(logger.entries[0]).toMatchObject({ level: 'error', message: 'reply handler crashed' })
   })
 
   test('an unknown tool is a protocol error', async () => {
     await expect(callTool('nope', {})).rejects.toThrow('Unknown tool: nope')
+  })
+})
+
+describe('connection state', () => {
+  test('is connected after connect and not after close, and runs close handlers', async () => {
+    let closed = 0
+    server.onClose(() => closed++)
+    expect(server.isConnected).toBe(true)
+    await server.close()
+    expect(server.isConnected).toBe(false)
+    expect(closed).toBeGreaterThan(0)
   })
 })

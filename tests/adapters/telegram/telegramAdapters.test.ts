@@ -11,6 +11,7 @@ import { TelegramDeepLinks } from '../../../src/adapters/telegram/TelegramDeepLi
 import { TelegramIdentityProbe } from '../../../src/adapters/telegram/TelegramIdentityProbe.ts'
 import { toInboundMessage } from '../../../src/adapters/telegram/toInboundMessage.ts'
 import { BotUnreachableError, InvalidBotTokenError } from '../../../src/application/errors.ts'
+import { FakeClock, FakeSleeper } from '../../fakes.ts'
 import { FakeTelegramApi, TEST_TOKEN } from '../../fakeTelegram.ts'
 
 describe('TelegramIdentityProbe', () => {
@@ -52,26 +53,99 @@ describe('TelegramIdentityProbe', () => {
 })
 
 describe('TelegramChatGateway', () => {
-  test('sends plain text with no parse mode', async () => {
+  function setup() {
     const api = new FakeTelegramApi()
-    await new TelegramChatGateway(TEST_TOKEN, api.fetch).sendText('5000000001', 'hi *there*')
+    const sleeper = new FakeSleeper(new FakeClock())
+    const gateway = new TelegramChatGateway(TEST_TOKEN, { fetch: api.fetch, sleeper })
+    return { api, sleeper, gateway }
+  }
+
+  const flood = (retryAfter: number) =>
+    ({
+      ok: false,
+      error_code: 429,
+      description: `Too Many Requests: retry after ${retryAfter}`,
+      parameters: { retry_after: retryAfter },
+    }) as const
+
+  test('sends plain text: no parse mode, link previews disabled', async () => {
+    const { api, gateway } = setup()
+    expect(await gateway.sendText('5000000001', 'hi *there* https://x.test')).toEqual({
+      parts: 1,
+      redactions: 0,
+    })
     expect(api.calls).toEqual([
-      { method: 'sendMessage', payload: { chat_id: '5000000001', text: 'hi *there*' } },
+      {
+        method: 'sendMessage',
+        payload: {
+          chat_id: '5000000001',
+          text: 'hi *there* https://x.test',
+          link_preview_options: { is_disabled: true },
+        },
+      },
     ])
   })
 
+  test('threads under replyTo, and still sends if that message is gone', async () => {
+    const { api, gateway } = setup()
+    await gateway.sendText('5000000001', 'answer', { replyTo: '77' })
+    expect(api.calls[0]?.payload.reply_parameters).toEqual({
+      message_id: 77,
+      allow_sending_without_reply: true,
+    })
+  })
+
+  test('sendTyping sends the typing chat action', async () => {
+    const { api, gateway } = setup()
+    await gateway.sendTyping('5000000001')
+    expect(api.calls).toEqual([
+      { method: 'sendChatAction', payload: { chat_id: '5000000001', action: 'typing' } },
+    ])
+  })
+
+  test('a 429 waits retry_after through the sleeper and retries', async () => {
+    const { api, sleeper, gateway } = setup()
+    api.script('sendMessage', flood(3), flood(1))
+    await gateway.sendText('1', 'x')
+    expect(sleeper.naps).toEqual([3000, 1000])
+    expect(api.callsTo('sendMessage')).toHaveLength(3)
+  })
+
+  test('retries are bounded', async () => {
+    const { api, sleeper, gateway } = setup()
+    api.script('sendMessage', flood(1), flood(1), flood(1), flood(1))
+    const error = await gateway.sendText('1', 'x').catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(TelegramCallError)
+    expect((error as TelegramCallError).summary.code).toBe(429)
+    expect(sleeper.naps).toEqual([1000, 1000, 1000])
+    expect(api.callsTo('sendMessage')).toHaveLength(4)
+  })
+
+  test('a very long retry_after fails at once instead of blocking the reply', async () => {
+    const { api, sleeper, gateway } = setup()
+    api.script('sendMessage', flood(3600))
+    await expect(gateway.sendText('1', 'x')).rejects.toBeInstanceOf(TelegramCallError)
+    expect(sleeper.naps).toEqual([])
+  })
+
   test('failures surface as TelegramCallError without the token', async () => {
-    const api = new FakeTelegramApi()
+    const { api, gateway } = setup()
     api.script('sendMessage', {
       ok: false,
       error_code: 403,
       description: 'Forbidden: bot was blocked by the user',
     })
-    const error = await new TelegramChatGateway(TEST_TOKEN, api.fetch)
-      .sendText('1', 'x')
-      .catch((e: unknown) => e)
+    const error = await gateway.sendText('1', 'x').catch((e: unknown) => e)
     expect(error).toBeInstanceOf(TelegramCallError)
     expect((error as Error).message).toBe('403: Forbidden: bot was blocked by the user')
+  })
+
+  test('network errors are redacted, for typing too', async () => {
+    const { api, gateway } = setup()
+    api.script('sendChatAction', { networkError: `connect https://x/bot${TEST_TOKEN}/x` })
+    const error = await gateway.sendTyping('1').catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(TelegramCallError)
+    expect((error as Error).message).not.toContain(TEST_TOKEN)
   })
 })
 
@@ -86,6 +160,7 @@ describe('toInboundMessage', () => {
     } as Message
     expect(toInboundMessage(message)).toEqual({
       chatId: '7000000003',
+      messageId: '1',
       chatKind: 'private',
       sender: { id: '7000000003', username: undefined, displayName: 'Ana Gómez' },
       text: 'hi',

@@ -4,7 +4,7 @@
  * client standing in for Claude Code.
  */
 import { afterAll, beforeAll, expect, test } from 'bun:test'
-import { existsSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
@@ -19,6 +19,8 @@ const transportErrors: Error[] = []
 const notifications: unknown[] = []
 let baseUrl: string
 let stateDir: string
+let projectDir: string
+const PROJECT_SECRET = 'Zq8!vR2#pL-0042-main'
 
 async function waitFor<T>(probe: () => T | undefined, what: string): Promise<T> {
   for (let elapsed = 0; elapsed < 10_000; elapsed += 20) {
@@ -32,11 +34,19 @@ async function waitFor<T>(probe: () => T | undefined, what: string): Promise<T> 
 beforeAll(async () => {
   // Never the real ~/.claude state, and never a real token: the server must not reach Telegram.
   stateDir = makeTempDir()
+  projectDir = makeTempDir()
+  // The server reads the project's env files (CLAUDE_PROJECT_DIR) to redact their values.
+  writeFileSync(join(projectDir, '.env'), `API_SECRET=${PROJECT_SECRET}\n`)
   transport = new StdioClientTransport({
     command: process.execPath, // the bun binary running the tests
     args: ['src/main.ts'],
     cwd: repoRoot,
-    env: { TELEGRAM_BRIDGE_DEV_PORT: '0', TELEGRAM_BRIDGE_HOME: stateDir, TELEGRAM_BOT_TOKEN: '' },
+    env: {
+      TELEGRAM_BRIDGE_DEV_PORT: '0',
+      TELEGRAM_BRIDGE_HOME: stateDir,
+      TELEGRAM_BOT_TOKEN: '',
+      CLAUDE_PROJECT_DIR: projectDir,
+    },
     stderr: 'pipe',
   })
   transport.stderr?.on('data', (chunk: Buffer) => {
@@ -59,6 +69,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await client.close()
   removeTempDir(stateDir)
+  removeTempDir(projectDir)
 })
 
 test('a POST reaches the session and the reply comes back on /events', async () => {
@@ -90,7 +101,28 @@ test('a POST reaches the session and the reply comes back on /events', async () 
   expect(new TextDecoder().decode(value)).toBe(
     'event: reply\ndata: {"chat_id":"dev","text":"noon"}\n\n',
   )
+
+  // Even the dev route goes through the outbound redaction wired in main.ts.
+  const leaky = await client.callTool({
+    name: 'reply',
+    arguments: { chat_id: 'dev', text: `key ${PROJECT_SECRET}` },
+  })
+  expect(leaky.content).toEqual([
+    { type: 'text', text: 'sent; 1 secret(s) were replaced with [REDACTED]' },
+  ])
+  const redacted = await reader.read()
+  expect(new TextDecoder().decode(redacted.value)).toBe(
+    'event: reply\ndata: {"chat_id":"dev","text":"key [REDACTED]"}\n\n',
+  )
+
+  // Without a token nobody is reachable on Telegram, and that is a tool error, not a crash.
+  const nowhere = await client.callTool({
+    name: 'reply',
+    arguments: { chat_id: '5000000001', text: 'hi' },
+  })
+  expect(nowhere.isError).toBe(true)
   await reader.cancel()
+  expect(stderr).not.toContain(PROJECT_SECRET)
 
   expect(transportErrors).toEqual([])
   expect(stderr).toContain('telegram-bridge [info] channel connected')

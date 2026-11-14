@@ -10,6 +10,7 @@ import type { SenderProfile } from '../../domain/Sender.ts'
 export function toInboundMessage(message: Message): InboundMessage {
   return {
     chatId: String(message.chat.id),
+    messageId: String(message.message_id),
     chatKind: message.chat.type as ChatKind,
     sender: toSender(message.from),
     text: message.text,

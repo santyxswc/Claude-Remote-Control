@@ -65,12 +65,15 @@ test('only the paired account gets through; a stranger gets no reply and no sess
     createInboundPipeline({
       claimPairing: new ClaimPairing({ ...lifecycle, hasher, clock }),
       authorizeSender: new AuthorizeSender(state.allowed),
-      chat: new TelegramChatGateway(TEST_TOKEN, api.fetch),
+      chat: new TelegramChatGateway(TEST_TOKEN, { fetch: api.fetch }),
       messages: es,
       logger,
-      deliver: {
-        handle: async (m) => session.emit({ content: m.text ?? '', meta: { chat_id: m.chatId } }),
-      },
+      clock,
+      afterAuthentication: [
+        {
+          handle: async (m) => session.emit({ content: m.text ?? '', meta: { chat_id: m.chatId } }),
+        },
+      ],
     }),
   )
 
@@ -116,14 +119,15 @@ test('only the paired account gets through; a stranger gets no reply and no sess
   ])
 
   // The only outbound call is the one acknowledgement of the owner's claim.
-  expect(api.callsTo('sendMessage').map((c) => c.payload)).toEqual([
-    { chat_id: String(PHONE_OWNER.id), text: es.pairingClaimedReply },
+  expect(api.callsTo('sendMessage').map((c) => [c.payload.chat_id, c.payload.text])).toEqual([
+    [String(PHONE_OWNER.id), es.pairingClaimedReply],
   ])
   expect(api.calls.every((c) => ['getMe', 'getUpdates', 'sendMessage'].includes(c.method))).toBe(
     true,
   )
 
   // A trace exists for the stranger, by id only: never the text, the code or the token.
+  // Since F2 the drop line is throttled: one line per sender per minute.
   const strangerId = String(STRANGER.id)
   expect(
     logger.entries.filter(
@@ -131,7 +135,7 @@ test('only the paired account gets through; a stranger gets no reply and no sess
         e.message === 'dropped message from an unauthorized sender' &&
         (e.fields as { senderId?: string } | undefined)?.senderId === strangerId,
     ).length,
-  ).toBe(4)
+  ).toBe(1)
   for (const secret of [...strangerTexts, 'from a group', started.code, TEST_TOKEN]) {
     expect(logger.text).not.toContain(secret)
   }

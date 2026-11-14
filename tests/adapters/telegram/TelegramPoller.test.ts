@@ -49,6 +49,7 @@ test('long-polls with only the update types we use and maps messages', async () 
 
   expect(s.received[0]).toEqual({
     chatId: '5000000001',
+    messageId: '1',
     chatKind: 'private',
     sender: { id: '5000000001', username: 'owner', displayName: 'Owner' },
     text: 'hello',

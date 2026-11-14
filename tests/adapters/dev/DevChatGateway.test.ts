@@ -20,5 +20,8 @@ test('delivers replies to every subscriber until it unsubscribes', async () => {
 })
 
 test('sending with no subscriber succeeds and goes nowhere', async () => {
-  await expect(new DevChatGateway().sendText('dev', 'unseen')).resolves.toBeUndefined()
+  await expect(new DevChatGateway().sendText('dev', 'unseen')).resolves.toEqual({
+    parts: 1,
+    redactions: 0,
+  })
 })

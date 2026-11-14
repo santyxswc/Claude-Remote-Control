@@ -34,6 +34,25 @@ export class TerminalUnavailableError extends ApplicationError {
   }
 }
 
+/** A long message failed partway: the first `delivered` of `total` parts reached the chat. */
+export class PartialDeliveryError extends ApplicationError {
+  constructor(
+    readonly delivered: number,
+    readonly total: number,
+    readonly failure: unknown,
+  ) {
+    const reason = failure instanceof Error ? failure.message : String(failure)
+    super(`Delivered ${delivered} of ${total} parts; then: ${reason}`)
+  }
+}
+
+/** The text is empty or only whitespace, which the chat platform refuses. */
+export class EmptyMessageError extends ApplicationError {
+  constructor() {
+    super('The message has no visible text')
+  }
+}
+
 export class PairingNotFoundError extends ApplicationError {
   constructor() {
     super('The pairing no longer exists')

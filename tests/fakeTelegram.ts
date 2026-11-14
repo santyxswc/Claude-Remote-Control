@@ -10,6 +10,13 @@ export interface ApiPayload {
   readonly chat_id?: string | number
   readonly text?: string
   readonly allowed_updates?: readonly string[]
+  readonly action?: string
+  readonly parse_mode?: string
+  readonly link_preview_options?: { readonly is_disabled?: boolean }
+  readonly reply_parameters?: {
+    readonly message_id?: number
+    readonly allow_sending_without_reply?: boolean
+  }
 }
 
 export interface ApiCall {
@@ -19,7 +26,12 @@ export interface ApiCall {
 
 type Reply =
   | { readonly ok: true; readonly result: unknown }
-  | { readonly ok: false; readonly error_code: number; readonly description: string }
+  | {
+      readonly ok: false
+      readonly error_code: number
+      readonly description: string
+      readonly parameters?: { readonly retry_after?: number }
+    }
   | { readonly networkError: string }
 
 const BOT_INFO = {
@@ -116,6 +128,8 @@ export class FakeTelegramApi {
             text: payload.text,
           },
         }
+      case 'sendChatAction':
+        return { ok: true, result: true }
       case 'getUpdates':
         return { ok: true, result: await this.#takeUpdates(payload, signal) }
       default:

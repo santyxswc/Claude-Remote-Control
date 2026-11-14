@@ -13,7 +13,10 @@ Code session. The approved design is `docs/plan.md` (Spanish); each flow has its
 - The application layer defines the ports; adapters implement them. Keep ports small.
 - One use case per file, with a single reason to change.
 - `src/main.ts` (the channel) and `src/cli.ts` (the `telegram-bridge` CLI) are the only
-  composition roots and wire everything by hand (no DI container).
+  composition roots and wire everything by hand (no DI container). Larger wiring lives in small
+  factory modules under `src/composition/`, used only by those roots.
+- Outbound text always goes through `buildOutbound()` (`src/composition/outbound.ts`): redaction,
+  then chunking. Never construct `TelegramChatGateway` anywhere else; a test enforces it.
 - `bun run check:arch` enforces the import rules; do not weaken it to make code pass.
 
 ## Runtime rules
