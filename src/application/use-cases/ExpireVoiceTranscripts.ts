@@ -30,11 +30,15 @@ export class ExpireVoiceTranscripts {
   }
 
   /** Transcripts of another channel process can no longer be sent from here (ADR 0007). */
-  async expireOrphans(): Promise<number> {
+  async expireOrphans(only?: ReadonlySet<string>): Promise<number> {
     const now = this.deps.clock.now()
     let count = 0
     for (const transcript of this.deps.store.listPending()) {
-      if (transcript.session === this.deps.session) continue
+      if (
+        transcript.session === this.deps.session ||
+        (only !== undefined && !only.has(transcript.session))
+      )
+        continue
       if (await this.#close(transcript, transcript.cancel(now), 'orphaned')) count += 1
     }
     return count

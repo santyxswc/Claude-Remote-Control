@@ -12,6 +12,8 @@ export interface InboundCallback {
   readonly messageId?: string
   readonly sender: SenderProfile | undefined
   readonly data: string | undefined
+  /** The forum topic of the tapped message (F14), when the platform says it is in one. */
+  readonly threadId?: string
 }
 
 export type CallbackHandler = (callback: InboundCallback) => Promise<void>

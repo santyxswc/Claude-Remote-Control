@@ -30,11 +30,15 @@ export class ExpireMemoryProposals {
   }
 
   /** Proposals of another channel process can no longer be resolved here (ADR 0007). */
-  async expireOrphans(): Promise<number> {
+  async expireOrphans(only?: ReadonlySet<string>): Promise<number> {
     const now = this.deps.clock.now()
     let count = 0
     for (const proposal of this.deps.store.listPending()) {
-      if (proposal.session === this.deps.session) continue
+      if (
+        proposal.session === this.deps.session ||
+        (only !== undefined && !only.has(proposal.session))
+      )
+        continue
       if (await this.#close(proposal, proposal.cancel(now), 'orphaned')) count += 1
     }
     return count

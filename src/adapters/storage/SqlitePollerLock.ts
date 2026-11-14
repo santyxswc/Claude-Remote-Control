@@ -69,6 +69,13 @@ export class SqlitePollerLock implements PollerLock {
     return result.changes === 1
   }
 
+  /** The live holder, if any; reads only (`hub status`, F14). */
+  currentHolder(): PollerLockHolder | undefined {
+    const row = this.#read()
+    if (row === null || !this.#isLive(row, this.#options.clock.now())) return undefined
+    return toHolder(row)
+  }
+
   release(): void {
     this.#db.query('DELETE FROM poller_lock WHERE id = 1 AND pid = ?').run(this.#options.pid)
   }
@@ -88,5 +95,6 @@ export class SqlitePollerLock implements PollerLock {
 }
 
 function toHolder(row: LockRow): PollerLockHolder {
-  return { pid: row.pid, role: row.role === 'cli' ? 'cli' : 'channel', startedAt: row.started_at }
+  const role: PollerRole = row.role === 'cli' ? 'cli' : row.role === 'hub' ? 'hub' : 'channel'
+  return { pid: row.pid, role, startedAt: row.started_at }
 }

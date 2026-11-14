@@ -203,7 +203,7 @@ export class HookIpcServer implements HookEventSource {
 }
 
 /** True only for a socket file nobody answers on; anything else is left alone. */
-async function isStaleSocket(path: string): Promise<boolean> {
+export async function isStaleSocket(path: string): Promise<boolean> {
   try {
     if (!lstatSync(path).isSocket()) return false
   } catch {

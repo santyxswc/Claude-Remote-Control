@@ -8,6 +8,13 @@ import { JsonBotIdentityStore } from './JsonBotIdentityStore.ts'
 import { SqliteAllowedSenderStore } from './SqliteAllowedSenderStore.ts'
 import { SqliteAuditLog } from './SqliteAuditLog.ts'
 import { SqliteChoiceStore } from './SqliteChoiceStore.ts'
+import {
+  SqliteGroupBindingStore,
+  SqliteHubGroupStore,
+  SqliteHubMessageLedger,
+  SqliteHubSessionStore,
+  SqliteHubTopicStore,
+} from './SqliteHubStores.ts'
 import { SqliteMemoryProposalStore } from './SqliteMemoryProposalStore.ts'
 import { SqlitePairingStore } from './SqlitePairingStore.ts'
 import { SqlitePermissionStore } from './SqlitePermissionStore.ts'
@@ -33,6 +40,13 @@ export interface StateStores {
   readonly memoryProposals: SqliteMemoryProposalStore
   /** Voice transcripts waiting for Send or Discard (F13). */
   readonly voiceTranscripts: SqliteVoiceTranscriptStore
+  /** F14: the bound group (hub mode is on while one is stored), topics, sessions, ledger. */
+  readonly hubGroup: SqliteHubGroupStore
+  readonly hubTopics: SqliteHubTopicStore
+  readonly hubSessions: SqliteHubSessionStore
+  readonly hubMessages: SqliteHubMessageLedger
+  /** F14: hub init codes. */
+  readonly groupBindings: SqliteGroupBindingStore
   readonly tokens: DotEnvTokenStore
   readonly identities: JsonBotIdentityStore
   /** The panic brake (F6): a file, so the PreToolUse hook can read it without SQLite. */
@@ -56,6 +70,11 @@ export function openState(
     statusMessages: new SqliteStatusMessageStore(db),
     memoryProposals: new SqliteMemoryProposalStore(db),
     voiceTranscripts: new SqliteVoiceTranscriptStore(db),
+    hubGroup: new SqliteHubGroupStore(db),
+    hubTopics: new SqliteHubTopicStore(db),
+    hubSessions: new SqliteHubSessionStore(db),
+    hubMessages: new SqliteHubMessageLedger(db),
+    groupBindings: new SqliteGroupBindingStore(db),
     lock: new SqlitePollerLock(db, { pid: process.pid, clock, isProcessAlive }),
     tokens: new DotEnvTokenStore(stateDir, env),
     identities: new JsonBotIdentityStore(stateDir),

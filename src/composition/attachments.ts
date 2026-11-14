@@ -6,6 +6,7 @@ import { FileAttachmentInbox } from '../adapters/storage/FileAttachmentInbox.ts'
 import type { StateStores } from '../adapters/storage/openState.ts'
 import { TelegramAttachmentSource } from '../adapters/telegram/TelegramAttachmentSource.ts'
 import type { Messages } from '../application/i18n/messages.ts'
+import type { AttachmentSource } from '../application/ports/AttachmentSource.ts'
 import type { ChatGateway } from '../application/ports/ChatGateway.ts'
 import type { Clock } from '../application/ports/Clock.ts'
 import type { Logger } from '../application/ports/Logger.ts'
@@ -29,6 +30,8 @@ export interface AttachmentWiringDeps {
   readonly maxBytes: number
   readonly clock: Clock
   readonly logger: Logger
+  /** F14, a spoke: downloads go through the hub; Telegram otherwise. */
+  readonly source?: AttachmentSource
   /** Test seam for the downloads. */
   readonly fetch?: typeof fetch
 }
@@ -44,9 +47,11 @@ export function buildAttachments(deps: AttachmentWiringDeps): AttachmentWiring {
   const inbox = new FileAttachmentInbox(deps.stateDir, deps.session, logger)
   const sweep = new SweepInbox(inbox, clock, logger)
   const receive = new ReceiveAttachment({
-    source: new TelegramAttachmentSource(deps.token, {
-      ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
-    }),
+    source:
+      deps.source ??
+      new TelegramAttachmentSource(deps.token, {
+        ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
+      }),
     inbox,
     forward: deps.forward,
     chat: deps.chat,

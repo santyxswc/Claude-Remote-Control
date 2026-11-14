@@ -65,4 +65,16 @@ export interface InboundMessage {
   /** A voice note (F13); `text` is undefined. */
   readonly voice?: InboundVoice
   readonly forwardContext?: ForwardContext
+  /**
+   * Group chats only (F14), set by the platform adapter and read only by the
+   * hub. The forum topic, only when the platform says the message belongs to
+   * a topic (Telegram: `is_topic_message`).
+   */
+  readonly threadId?: string
+  /** Sent on behalf of a chat (an anonymous admin, a linked channel): never a person. */
+  readonly onBehalfOfChat?: true
+  /** The chat is a forum supergroup (topics enabled). */
+  readonly isForum?: true
+  /** The group's title, sanitized; for the hub binding confirmation. */
+  readonly chatTitle?: string
 }

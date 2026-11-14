@@ -47,10 +47,11 @@ export class ExpirePermissions {
    * from the chat: taps reach only the process that polls, and its verdicts
    * only reach its own session. Run when this process starts polling.
    */
-  async expireOrphans(): Promise<number> {
+  async expireOrphans(only?: ReadonlySet<string>): Promise<number> {
     let expired = 0
     for (const stored of this.deps.store.listOpen()) {
-      if (stored.session === this.deps.session) continue
+      if (stored.session === this.deps.session || (only !== undefined && !only.has(stored.session)))
+        continue
       if (await this.#expire(stored, 'orphaned')) expired += 1
     }
     return expired

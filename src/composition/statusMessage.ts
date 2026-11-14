@@ -8,6 +8,7 @@ import type { Messages } from '../application/i18n/messages.ts'
 import type { Clock } from '../application/ports/Clock.ts'
 import type { Logger } from '../application/ports/Logger.ts'
 import type { StatusMessageGateway } from '../application/ports/StatusMessageGateway.ts'
+import type { StatusMessageStore } from '../application/ports/StatusMessageStore.ts'
 import { StatusBoard } from '../application/status/StatusBoard.ts'
 import { PinStatusMessage } from '../application/use-cases/PinStatusMessage.ts'
 import { UnpinStatusMessage } from '../application/use-cases/UnpinStatusMessage.ts'
@@ -20,6 +21,8 @@ export interface StatusMessageWiringDeps {
   readonly state: Pick<StateStores, 'statusMessages' | 'allowed' | 'audit' | 'brake' | 'choices'>
   /** The decorated gateway from `buildOutbound`. */
   readonly gateway: StatusMessageGateway
+  /** F14, a spoke: the status rows of its own topic instead of the per-chat table. */
+  readonly store?: StatusMessageStore
   readonly session: string
   readonly pendingPermissions: () => number
   readonly project: string | undefined
@@ -53,7 +56,7 @@ export function buildStatusMessage(deps: StatusMessageWiringDeps): StatusMessage
   const common = {
     board,
     gateway: deps.gateway,
-    store: state.statusMessages,
+    store: deps.store ?? state.statusMessages,
     audit: state.audit,
     clock,
     logger,

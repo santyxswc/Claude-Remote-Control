@@ -21,6 +21,10 @@ export interface ApiPayload {
   readonly disable_notification?: boolean
   readonly callback_query_id?: string
   readonly file_id?: string
+  /** F14: the forum topic a send goes to. */
+  readonly message_thread_id?: number
+  readonly name?: string
+  readonly user_id?: number
   readonly reply_markup?: {
     readonly inline_keyboard?: readonly (readonly { text: string; callback_data?: string }[])[]
   }
@@ -73,6 +77,24 @@ export interface FakeFile {
 
 type From = { id: number; username?: string; first_name: string }
 
+/** F14: a group as the fake plays it. */
+export interface GroupChat {
+  readonly id: number
+  readonly title: string
+  /** Topics enabled (`is_forum`); true by default. */
+  readonly forum?: boolean
+  readonly type?: 'group' | 'supergroup'
+}
+
+function groupChat(group: GroupChat): Record<string, unknown> {
+  return {
+    id: group.id,
+    type: group.type ?? 'supergroup',
+    title: group.title,
+    ...(group.forum === false ? {} : { is_forum: true }),
+  }
+}
+
 const BOT_INFO = {
   id: 123456789,
   is_bot: true,
@@ -104,6 +126,15 @@ export class FakeTelegramApi {
   #nextUpdateId = 1
   #nextMessageId = 1000
   #nextCallbackId = 1
+  #nextTopicId = 500
+  /** F14: what `getChatMember` answers for the bot; an administrator with every right by default. */
+  botMember: Record<string, unknown> = {
+    status: 'administrator',
+    can_manage_topics: true,
+    can_pin_messages: true,
+  }
+  /** F14: topics deleted in Telegram; a send there fails like the real API. */
+  readonly deletedTopics = new Set<number>()
 
   readonly fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input)
@@ -238,6 +269,94 @@ export class FakeTelegramApi {
     return id
   }
 
+  /**
+   * F14: queues a message in a group. `thread` makes it a topic message
+   * (`is_topic_message`); `forum` marks the supergroup as a forum;
+   * `senderChat` plays an anonymous administrator.
+   */
+  sendGroupText(
+    from: From,
+    group: GroupChat,
+    text: string,
+    options: { thread?: number; senderChat?: boolean } = {},
+  ): number {
+    return this.push({
+      message: {
+        message_id: this.#nextUpdateId,
+        date: 1_700_000_000,
+        chat: groupChat(group),
+        from: { is_bot: false, ...from },
+        ...(options.thread === undefined
+          ? {}
+          : { message_thread_id: options.thread, is_topic_message: true }),
+        ...(options.senderChat === true
+          ? { sender_chat: { id: Number(group.id), type: 'supergroup', title: group.title } }
+          : {}),
+        text,
+      },
+    } as unknown as Omit<Update, 'update_id'>)
+  }
+
+  /** F14: a document sent in a topic. */
+  sendGroupDocument(
+    from: From,
+    group: GroupChat,
+    thread: number,
+    document: { fileId: string; fileName?: string; size?: number },
+  ): number {
+    return this.push({
+      message: {
+        message_id: this.#nextUpdateId,
+        date: 1_700_000_000,
+        chat: groupChat(group),
+        from: { is_bot: false, ...from },
+        message_thread_id: thread,
+        is_topic_message: true,
+        document: {
+          file_id: document.fileId,
+          file_unique_id: `u-${document.fileId}`,
+          ...(document.fileName === undefined ? {} : { file_name: document.fileName }),
+          ...(document.size === undefined ? {} : { file_size: document.size }),
+        },
+      },
+    } as unknown as Omit<Update, 'update_id'>)
+  }
+
+  /** F14: a tap on a button of `messageId`, a message in topic `thread` of `group`. */
+  tapInTopic(
+    from: From,
+    group: GroupChat,
+    thread: number | undefined,
+    messageId: number,
+    data: string,
+  ): string {
+    const id = `cbq-${this.#nextCallbackId++}`
+    this.push({
+      callback_query: {
+        id,
+        from: { is_bot: false, ...from },
+        chat_instance: 'ci',
+        data,
+        message: {
+          message_id: messageId,
+          date: 1_700_000_000,
+          chat: groupChat(group),
+          ...(thread === undefined ? {} : { message_thread_id: thread, is_topic_message: true }),
+        },
+      },
+    } as unknown as Omit<Update, 'update_id'>)
+    return id
+  }
+
+  /** F14: the calls that went to `chatId` (and to `thread`, when given). */
+  sentTo(chatId: string | number, thread?: number): ApiCall[] {
+    return this.calls.filter(
+      (call) =>
+        String(call.payload.chat_id) === String(chatId) &&
+        (thread === undefined || call.payload.message_thread_id === thread),
+    )
+  }
+
   push(update: Omit<Update, 'update_id'>): number {
     const update_id = this.#nextUpdateId++
     this.#updates.push({ update_id, ...update } as Update)
@@ -279,6 +398,16 @@ export class FakeTelegramApi {
       case 'getMe':
         return { ok: true, result: BOT_INFO }
       case 'sendMessage':
+        if (
+          payload.message_thread_id !== undefined &&
+          this.deletedTopics.has(payload.message_thread_id)
+        ) {
+          return {
+            ok: false,
+            error_code: 400,
+            description: 'Bad Request: message thread not found',
+          }
+        }
         return {
           ok: true,
           result: {
@@ -314,6 +443,17 @@ export class FakeTelegramApi {
             text: payload.text,
           },
         }
+      case 'createForumTopic':
+        return {
+          ok: true,
+          result: {
+            message_thread_id: this.#nextTopicId++,
+            name: payload.name,
+            icon_color: 7322096,
+          },
+        }
+      case 'getChatMember':
+        return { ok: true, result: { user: BOT_INFO, ...this.botMember } }
       case 'getUpdates':
         return { ok: true, result: await this.#takeUpdates(payload, signal) }
       case 'getFile': {
@@ -419,3 +559,7 @@ export class FakeTelegramApi {
 /** Telegram user ids as the API sends them: JSON numbers, here above 32 bits. */
 export const PHONE_OWNER = { id: 5_000_000_001, username: 'owner', first_name: 'Owner' }
 export const STRANGER = { id: 6_000_000_002, username: 'stranger', first_name: 'Stranger' }
+
+/** F14: the owner's forum supergroup, and another group of theirs. */
+export const FORUM: GroupChat = { id: -1_001_234_567_890, title: 'Projects' }
+export const OTHER_GROUP: GroupChat = { id: -1_009_999_999_999, title: 'Other' }

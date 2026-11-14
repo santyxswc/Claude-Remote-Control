@@ -175,7 +175,7 @@ export function toProposeMemoryResult(outcome: ProposeMemoryOutcome): CallToolRe
     case 'refused':
       return errorResult(
         outcome.reason === 'not_polling'
-          ? 'Refused: this session does not receive Telegram updates right now (another session polls the bot), so nobody could approve.'
+          ? 'Refused: this session does not receive Telegram updates right now (another session polls the bot, or the hub is not running in hub mode), so nobody could approve.'
           : CHAT_NOT_ALLOWED,
       )
     case 'invalid': {

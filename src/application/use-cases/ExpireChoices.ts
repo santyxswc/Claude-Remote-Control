@@ -33,11 +33,12 @@ export class ExpireChoices {
    * Choices of another channel process can no longer reach their session
    * (ADR 0007): cancelled when this process starts polling.
    */
-  async expireOrphans(): Promise<number> {
+  async expireOrphans(only?: ReadonlySet<string>): Promise<number> {
     const now = this.deps.clock.now()
     let count = 0
     for (const choice of this.deps.store.listOpen()) {
-      if (choice.session === this.deps.session) continue
+      if (choice.session === this.deps.session || (only !== undefined && !only.has(choice.session)))
+        continue
       if (await this.#close(choice, choice.cancel(now), 'orphaned')) count += 1
     }
     return count

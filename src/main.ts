@@ -19,6 +19,7 @@ import {
 } from './adapters/dev/DevHttpInbound.ts'
 import { DEV_PORT_ENV, devListenerPort } from './adapters/dev/devPort.ts'
 import { GitCli } from './adapters/git/GitCli.ts'
+import { SpokeLink } from './adapters/hub/SpokeLink.ts'
 import { RedactingLogger } from './adapters/logging/RedactingLogger.ts'
 import { StderrLogger } from './adapters/logging/StderrLogger.ts'
 import { McpChannelServer } from './adapters/mcp/McpChannelServer.ts'
@@ -28,6 +29,7 @@ import { DiskSkillFiles, resolveProjectDir } from './adapters/skills/DiskSkillFi
 import { TOKEN_ENV } from './adapters/storage/DotEnvTokenStore.ts'
 import { openState, type StateStores } from './adapters/storage/openState.ts'
 import { defaultStateDir, resolveClaudeConfigDir } from './adapters/storage/stateDir.ts'
+import { CryptoRandomSource } from './adapters/system/CryptoRandomSource.ts'
 import { DotEnvProjectSecrets } from './adapters/system/DotEnvProjectSecrets.ts'
 import { SystemClock } from './adapters/system/SystemClock.ts'
 import { createTranscriber } from './adapters/voice/createTranscriber.ts'
@@ -42,6 +44,7 @@ import { buildSendReply } from './composition/replies.ts'
 import { buildScreenshots } from './composition/screenshots.ts'
 import { startTelegramInbound, type TelegramInbound } from './composition/telegramInbound.ts'
 import { maxUploadBytes } from './domain/attachments/attachmentPolicy.ts'
+import { encodeBase64Url } from './domain/base64url.ts'
 import { projectName } from './domain/notices/sessionNotices.ts'
 import { selectSecretValues } from './domain/redaction/secretValues.ts'
 
@@ -87,12 +90,19 @@ logger = new RedactingLogger(logger, [
   ...(token === undefined ? [] : [token]),
   ...selectSecretValues(literalSecrets),
 ])
+// F14, hub mode: a bound group makes this session a spoke of the hub, which alone
+// polls and sends; everything outbound goes through it. Off: exactly as before.
+const knownProjectDir =
+  projectDir !== undefined && isAbsolute(projectDir) ? projectDir : process.cwd()
+const session = encodeBase64Url(new CryptoRandomSource().bytes(9))
+const spoke = spokeLinkOrNothing()
 // F11: charts are drawn in a child process; Vega and resvg are never loaded here.
 const outbound = buildOutbound({
   token,
   dev: devReplies,
   literalSecrets,
   charts: new ProcessChartRenderer(),
+  ...(spoke === undefined ? {} : { transport: spoke.transport }),
 })
 const tracking = createSessionTracking(clock)
 const sendReply = buildSendReply({
@@ -205,6 +215,27 @@ function voiceTranscriber() {
   return createTranscriber(setup, { env, run: spawnCapturing, probe: systemProbe })
 }
 
+/** Hub mode is on when `hub init` bound a group; a failure to read it means off. */
+function spokeLinkOrNothing(): SpokeLink | undefined {
+  if (state === undefined || stateDir === undefined || token === undefined) return undefined
+  let bound: boolean
+  try {
+    bound = state.hubGroup.load() !== undefined
+  } catch (error) {
+    logger.error('could not read the hub configuration; hub mode is off', { error })
+    return undefined
+  }
+  if (!bound) return undefined
+  logger.info('hub mode: this session connects to the hub')
+  return new SpokeLink({
+    stateDir,
+    session,
+    projectDir: knownProjectDir,
+    projectName: projectName(knownProjectDir),
+    logger,
+  })
+}
+
 /** Without the hook listener there are no notices; everything else keeps working. */
 function hookListenerOrNothing(dir: string): HookEventSource | undefined {
   try {
@@ -234,7 +265,7 @@ if (state !== undefined && token === undefined) {
   }
   const knownProject = resolveProjectDir(env, process.cwd(), existsSync)
   // F8: git runs in the project (CLAUDE_PROJECT_DIR, else the directory we started in).
-  const gitDir = projectDir !== undefined && isAbsolute(projectDir) ? projectDir : process.cwd()
+  const gitDir = knownProjectDir
   const project = projectName(gitDir)
   const git = new GitCli({
     // Resolved once, from PATH: never a `git` sitting in the project directory.
@@ -260,7 +291,10 @@ if (state !== undefined && token === undefined) {
       clock,
       logger,
       tracking,
-      hooks: hookListenerOrNothing(stateDir),
+      // In hub mode the hub listens for hook events and forwards this session's own.
+      hooks: spoke === undefined ? hookListenerOrNothing(stateDir) : spoke.hooks,
+      ...(spoke === undefined ? {} : { spoke }),
+      session,
       // tmux (any non-Windows OS) when Claude Code runs in a pane; otherwise /stop relies on the hook brake.
       sessionController: createSessionController({
         platform: process.platform,

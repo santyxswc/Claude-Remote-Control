@@ -125,7 +125,7 @@ export class FileAttachmentInbox implements AttachmentInbox {
     return removed
   }
 
-  async removeOtherSessions(): Promise<number> {
+  async removeOtherSessions(only?: ReadonlySet<string>): Promise<number> {
     let names: string[]
     try {
       names = await readdir(this.#root)
@@ -134,7 +134,7 @@ export class FileAttachmentInbox implements AttachmentInbox {
     }
     let removed = 0
     for (const name of names) {
-      if (name === this.#session) continue
+      if (name === this.#session || (only !== undefined && !only.has(name))) continue
       try {
         // A symlink is removed itself, never followed.
         await rm(join(this.#root, name), {
