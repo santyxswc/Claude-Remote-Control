@@ -16,8 +16,8 @@ Code session. The approved design is `docs/plan.md` (Spanish); each flow has its
   notice hook entrypoint) and `src/brakeHook.ts` (the `PreToolUse` brake) are the only composition
   roots and wire everything by hand (no DI container). Larger wiring lives in small factory modules
   under `src/composition/`, used only by those roots.
-- Outbound text always goes through `buildOutbound()` (`src/composition/outbound.ts`): redaction,
-  then chunking (prompts with buttons: redaction, then fitting to one message). Never construct
+- Outbound text, prompts and images always go through `buildOutbound()` (`src/composition/outbound.ts`): redaction,
+  then chunking (prompts with buttons: redaction, then fitting to one message; images: caption redaction and fitting). Never construct
   `TelegramChatGateway` anywhere else; a test enforces it.
 - `bun run check:arch` enforces the import rules; do not weaken it to make code pass.
 
