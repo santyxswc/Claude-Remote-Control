@@ -13,7 +13,8 @@ this project ([ADR 0001](docs/adr/0001-own-bot-per-user.md)).
 
 ## Status
 
-The MVP (flows F0 to F6) is implemented and covered by automated tests that use fakes for Telegram
+The MVP (flows F0 to F6) and two phase-3 flows (F7 options and skills, F10 incoming files) are
+implemented and covered by automated tests that use fakes for Telegram
 and for Claude Code, plus two local smoke tests for screenshots. It has **not yet been validated
 end to end against the real Telegram API or a live Claude Code session**. Several behaviours of
 Claude Code are marked "needs live verification" in the docs. The checklist for that validation
@@ -45,9 +46,18 @@ The MVP has six capabilities:
    account to the PC; you confirm the claimant at the terminal. Everyone else is ignored
    ([F1](docs/flows/F1.md)).
 
-Not in the MVP (see [docs/roadmap.md](docs/roadmap.md)): git from the chat, a pinned status message,
-incoming photos and files (non-text messages are refused today), charts, session summaries to
-memory, voice notes, one topic per project and the live-screen Mini App. Answering Telegram
+Since the MVP:
+
+7. **Options as buttons and `/skills`.** An `ask_choice` tool lets Claude ask a multiple-choice
+   question; your tap comes back as a normal message, never as an approval. `/skills` lists the
+   project's and your personal skills as buttons; a tap asks Claude to use one
+   ([F7](docs/flows/F7.md)).
+8. **Photos and files.** Send a photo or a document (images, PDF, text and source files) and Claude
+   gets the path of a private local copy. Types are checked by extension and content, the limit is
+   20 MB, and files are deleted after 24 hours ([F10](docs/flows/F10.md)).
+
+Not done yet (see [docs/roadmap.md](docs/roadmap.md)): git from the chat, a pinned status message,
+charts, session summaries to memory, voice notes, one topic per project and the live-screen Mini App. Answering Telegram
 calls is out of scope: the Bot API does not allow it.
 
 The MVP is one bot for one Claude Code session.
@@ -169,14 +179,19 @@ Sent to the bot from a paired account in a private chat. Anything else, includin
 | --- | --- |
 | `/start` | Checks that the bridge is connected. |
 | `/help` | Lists the commands. |
-| `/status` | Bot, paired since, MCP connection, pending permission requests, brake state, available screenshot kinds. |
+| `/status` | Bot, paired since, MCP connection, pending permission requests, brake state, available screenshot kinds, received files kept. |
 | `/stop [reason]` | Engages the brake, denies pending permission requests and, inside tmux on Linux or macOS, sends Escape. |
 | `/resume` | Releases the brake. Claude does not restart by itself. |
 | `/shot` | Screenshot of the screen. |
 | `/shot <url>` | Screenshot of an `http`/`https` page, for example `/shot localhost:3000`. |
+| `/skills` | Lists the project's and your personal skills as buttons; a tap sends "Use the skill /name" to Claude. |
 
 Permission prompts also accept `yes <id>` or `no <id>` as text (the id is shown in the prompt);
 high-risk requests can only be approved with the buttons.
+
+Photos and documents are saved and forwarded as a path ([F10](docs/flows/F10.md)); voice, video
+and stickers are refused with a notice. When Claude asks with `ask_choice`, tap an option, or tap
+"Other…" and type your answer as the next message.
 
 ## CLI commands
 
@@ -203,6 +218,8 @@ All settings are optional environment variables.
 | `TELEGRAM_BOT_TOKEN` | unset | Overrides the token stored by `init`. The file is the recommended storage. |
 | `TELEGRAM_BRIDGE_LOCALE` | `es` | `en` for English. |
 | `TELEGRAM_BRIDGE_BROWSER` | auto-detected | Absolute path of the browser used for `/shot <url>`. An invalid value disables page captures. |
+| `TELEGRAM_BRIDGE_MAX_UPLOAD_MB` | `20` | Largest incoming file, in whole MB from 1 to 20 (20 is the Bot API download limit; it can only be lowered). Anything else is logged and 20 is used. |
+| `CLAUDE_PROJECT_DIR` | set by Claude Code | The project whose `.claude/skills` `/skills` lists. When it is unset or relative, the working directory is used if it has `.claude/` or `.git`; otherwise only personal skills are listed. |
 | `TELEGRAM_BRIDGE_DEBUG` | unset | `1` prints diagnostics on stderr from the hook scripts. |
 | `TELEGRAM_BRIDGE_DEV_PORT` | unset | Development only, without a bot: a local HTTP listener (F0) that needs the bearer token it prints once to stderr, refuses browser requests (`Origin`, foreign `Host`), and does not start when a bot token is configured. Leave it unset. |
 
@@ -222,6 +239,10 @@ Read this before using it.
   `.env` files, not every secret. Text you send to Claude is not redacted.
 - **Screenshots bypass redaction.** Whatever is on screen or on the page reaches Telegram as pixels.
   Every image says so in its caption.
+- **Files you send are untrusted content for Claude.** A PDF or text file can contain instructions
+  aimed at Claude (prompt injection), just as pasted text can. The bridge checks types and sizes,
+  never runs files, and Claude reads them only with its normal, permission-checked tools.
+- **A choice button is only an answer.** It sends text to Claude; it never approves a tool call.
 - **Never use `--dangerously-skip-permissions` with this.** The permission relay exists so you do
   not need it.
 - **The development-channel flag.** A custom channel is not on Anthropic's approved list, so it
@@ -230,7 +251,7 @@ Read this before using it.
 - **Allow the reply tool, nothing broader.** Add `mcp__telegram-bridge__reply` to the allow rules of
   your Claude Code settings (as a plugin the name has the form `mcp__plugin_<plugin>_<server>__reply`;
   check it with `/permissions`). Do not pre-allow `send_screenshot`: each capture should stay a
-  decision. Details: [docs/flows/F3.md](docs/flows/F3.md#the-reply-tool-needs-its-own-permission).
+  decision. `ask_choice` only posts a question to your own chat; allowing it is your call. Details: [docs/flows/F3.md](docs/flows/F3.md#the-reply-tool-needs-its-own-permission).
 - Strangers get no reply and no event. Only private chats from allowlisted user ids are accepted.
 
 Full model and known limits: [docs/threat-model.md](docs/threat-model.md) and [SECURITY.md](SECURITY.md).
@@ -258,12 +279,18 @@ Full model and known limits: [docs/threat-model.md](docs/threat-model.md) and [S
 - **`/shot` has no capture tool.** The reply names what to install (see the optional tools table).
   `/status` shows which kinds are available. On Linux the channel must run inside the desktop
   session; after installing a tool, restart the session.
+- **A file was refused.** The notice gives the reason. Only the types in
+  [F10](docs/flows/F10.md#allowlist) are accepted and the content must match the extension; the
+  limit is 20 MB (or `TELEGRAM_BRIDGE_MAX_UPLOAD_MB`). Received files are kept in
+  `<state dir>/inbox/` for 24 hours.
+- **`/skills` shows nothing from the project.** Claude Code sets `CLAUDE_PROJECT_DIR`; started
+  some other way, the channel must run in the project directory. Plugin skills are not listed.
 
 ## How it works
 
 Claude Code starts the channel (`src/main.ts`) as an MCP server over stdio. The channel long-polls
 Telegram, passes each message through a chain of checks (private chat, pairing, allowlist, rate
-limit, text only, permission verdicts, commands, brake) and forwards what survives to the session
+limit, supported content, permission verdicts, commands, brake) and forwards what survives to the session
 as a channel notification. Everything sent back goes through redaction and chunking. Hooks run as
 short processes inside Claude Code and talk to the channel over a local Unix socket or named pipe;
 the brake hook reads a flag file. State lives in SQLite and a few files in the state directory.

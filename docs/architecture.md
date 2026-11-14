@@ -10,23 +10,24 @@ Clean architecture with ports and adapters. Dependencies point inward only, and
 
 | Layer | Path | Contains | May import |
 | --- | --- | --- | --- |
-| Domain | `src/domain` | Pairing state machine, allowed sender, permission request and its states, risk policy, secret redaction, message splitting, token bucket, brake record, notice policy, capture URL policy | Nothing outside `src/domain` (no packages, no `node:` or `bun:`) |
-| Application | `src/application` | Ports (`ports/`), use cases (`use-cases/`), the inbound chain (`pipeline/`), chat commands (`commands/`), outbound decorators (`outbound/`), hook routing (`hooks/`), permission rendering and callbacks, i18n catalog | `src/domain`, `src/application`, `zod` |
-| Adapters | `src/adapters/*` | `telegram`, `mcp`, `storage`, `capture`, `ipc`, `session`, `cli`, `logging`, `system`, `dev` | Application, domain, and the platform packages |
+| Domain | `src/domain` | Pairing state machine, allowed sender, permission request and its states, risk policy, secret redaction, message splitting, token bucket, brake record, notice policy, capture URL policy, choices (F7), skill frontmatter, attachment policy and inbox retention (F10) | Nothing outside `src/domain` (no packages, no `node:` or `bun:`) |
+| Application | `src/application` | Ports (`ports/`), use cases (`use-cases/`), the inbound chain (`pipeline/`), chat commands (`commands/`), outbound decorators (`outbound/`), hook routing (`hooks/`), permission rendering, button taps (`callbacks/`), choices and skills menus, i18n catalog | `src/domain`, `src/application`, `zod` |
+| Adapters | `src/adapters/*` | `telegram`, `mcp`, `storage`, `capture`, `ipc`, `session`, `skills`, `cli`, `logging`, `system`, `dev` | Application, domain, and the platform packages |
 | Composition | `src/main.ts`, `src/cli.ts`, `src/hook.ts`, `src/brakeHook.ts`, `src/composition/` | Hand-written wiring, no DI container. Larger wiring sits in small factory modules under `src/composition/` that only the entrypoints use | Everything |
 
 Platform-specific APIs (`bun:sqlite`, `Bun.serve`, `node:net`) stay in adapters.
 
 ## Ports
 
-Defined in `src/application/ports/` (28 today):
+Defined in `src/application/ports/` (32 today):
 
 | Group | Ports |
 | --- | --- |
 | Chat out | `ChatGateway` (text, typing), `PromptGateway` (messages with buttons, edit, answer a tap), `ImageGateway` |
 | Chat in | `InboundPoller`, `ChannelPort` (event to the Claude Code session) |
 | Claude Code | `PermissionVerdictPort`, `SessionController` (interrupt the turn), `SessionActivity` (busy, idle, unknown), `HookEventSource` (events from hooks) |
-| State | `AllowedSenderStore`, `PairingStore`, `PermissionStore`, `AuditLog`, `BrakeFlag`, `BotTokenStore`, `BotIdentityStore`, `PollerLock` |
+| State | `AllowedSenderStore`, `PairingStore`, `PermissionStore`, `ChoiceStore`, `AuditLog`, `BrakeFlag`, `BotTokenStore`, `BotIdentityStore`, `PollerLock` |
+| Files | `AttachmentSource` (download a file sent to the bot), `AttachmentInbox` (the private per-session inbox), `SkillFiles` (read `SKILL.md` files) |
 | Telegram identity | `BotIdentityProbe`, `PairingLinkBuilder` |
 | Capture | `ScreenCapturer`, `CaptureScratch` |
 | Security helpers | `SecretHasher`, `RandomSource`, `ProjectSecretsSource` |
@@ -38,7 +39,7 @@ Four composition roots, each a separate process:
 
 | Entrypoint | Started by | Role |
 | --- | --- | --- |
-| `src/main.ts` | Claude Code, as an MCP server over stdio | The channel: MCP server, Telegram polling (when it holds the lock), hook listener, permission relay, screenshots. stdout belongs to the MCP transport; logs go to stderr. Exits when stdin closes. |
+| `src/main.ts` | Claude Code, as an MCP server over stdio | The channel: MCP server, Telegram polling (when it holds the lock), hook listener, permission relay, screenshots, choices and `/skills`, incoming files. stdout belongs to the MCP transport; logs go to stderr. Exits when stdin closes. |
 | `src/cli.ts` | The user (`bun run bridge -- <cmd>`) | `init`, `pair`, `access`, `stop`, `resume`. Owns its terminal. `pair` polls Telegram itself only when no channel process holds the lock. |
 | `src/hook.ts` | Claude Code, per event (`Stop`, `Notification`, `UserPromptSubmit`, `PostToolUse`), async | Forwards a signed, trimmed copy of the event to the channel. Node builtins only. Always exits 0, nothing on stdout. |
 | `src/brakeHook.ts` | Claude Code, before every tool call (`PreToolUse`), synchronous | Opens `brake.json`. Absent: exit 0 silently. Present or unreadable: prints a JSON object that denies the call and stops Claude. |
@@ -47,8 +48,8 @@ How they communicate:
 
 | Link | Mechanism |
 | --- | --- |
-| Claude Code and the channel | MCP over stdio (`@modelcontextprotocol/sdk` 1.x): `notifications/claude/channel`, `reply` and `send_screenshot` tools, permission request and verdict notifications |
-| Channel (or `pair`) and Telegram | HTTPS long polling of `getUpdates` (grammY); only the poller-lock holder polls |
+| Claude Code and the channel | MCP over stdio (`@modelcontextprotocol/sdk` 1.x): `notifications/claude/channel`, `reply`, `send_screenshot` and `ask_choice` tools, permission request and verdict notifications |
+| Channel (or `pair`) and Telegram | HTTPS long polling of `getUpdates` (grammY); only the poller-lock holder polls. Incoming files: `getFile` plus a streamed download, in the background |
 | Channel and CLI | Shared SQLite database `bridge.sqlite` (WAL). The poller lock is a heartbeated row (ADR 0006) |
 | Hook and channel | Unix socket (Linux, macOS) or named pipe (Windows), one HMAC-signed line per connection (ADR 0008). Never TCP |
 | Brake hook, channel and CLI | The file `brake.json`, written atomically by the channel or CLI and read by the hook |
@@ -111,15 +112,23 @@ channel process runs it:
 3. `AuthenticateSenderStep`: sender id (`from.id`) must be on the allowlist; otherwise dropped
    silently.
 4. `RateLimitStep`: per-sender token bucket.
-5. `UnsupportedContentStep`: anything that is not text is refused with one notice per minute.
+5. `UnsupportedContentStep`: anything that is not text is refused with one notice per minute;
+   photos and documents pass when F10 is wired.
 6. `PermissionVerdictStep` (only when the relay is on): `yes|no <id>` text verdicts.
 7. `CommandRouterStep`: registered `/commands` run here; unknown ones fall through.
-8. `BrakeGateStep`: while the brake is engaged, nothing is forwarded.
-9. `ForwardToSessionStep` to `HandleInboundMessage`: emits the channel notification.
+8. `BrakeGateStep`: while the brake is engaged, nothing is forwarded (or downloaded).
+9. `AttachmentStep` (F10): a photo or file starts `ReceiveAttachment` in the background and
+   stops here.
+10. `ChoiceTextAnswerStep` (F7): after "Other…", the next text is tagged with the choice it
+    answers.
+11. `ForwardToSessionStep` to `HandleInboundMessage`: emits the channel notification.
 
 The `pair` CLI runs only steps 1 to 3. Button taps (`callback_query`) do not use this chain: they
-go through `PermissionCallbackHandler`, which applies its own private-chat, own-chat, allowlist
-and rate-limit checks.
+go through `ButtonTapHandler`, which applies its own private-chat, own-chat, allowlist and
+rate-limit checks and then routes by prefix: `p1:` to `ResolvePermission` (the only path to a
+verdict), `c1:` to `AnswerChoice` (delivers the label with `HandleInboundMessage`), `k1:` to
+the `/skills` menu (`RequestSkill` feeds "Use the skill /name" back into this chain as owner
+text). Parsers are anchored and strict, so no prefix can reach another route (ADR 0011).
 
 ## Outbound decorators
 
@@ -129,7 +138,7 @@ Decorator over the gateways, assembled only in `src/composition/outbound.ts`
 | Kind | Order |
 | --- | --- |
 | Text | `RedactingChatGateway` then `ChunkingChatGateway` then routing then `TelegramChatGateway` (or `DevChatGateway` for the dev chat) |
-| Prompts with buttons | `RedactingPromptGateway` (redact, fit to one message) then routing then Telegram |
+| Prompts with buttons | `RedactingPromptGateway` (redact the text and every button label, fit to one message) then routing then Telegram |
 | Images | `RedactingImageGateway` (caption redacted and fitted to 1024 characters; the image is not redacted) then routing then Telegram |
 
 Redaction runs before chunking so a secret cannot straddle two messages.
@@ -174,7 +183,7 @@ sequenceDiagram
 | Decorator | `src/application/outbound/RedactingChatGateway.ts`, `ChunkingChatGateway.ts`, `RedactingPromptGateway.ts`, `RedactingImageGateway.ts` | Nothing leaves without redaction |
 | Command | `src/application/commands/*Command.ts`, `CommandRegistry.ts`, `createCommandRegistry.ts` | A new command does not touch the router |
 | Strategy | `ScreenCapturer` (`src/adapters/capture/HeadlessBrowserCapturer.ts`, `CommandScreenCapturer.ts`); `RiskPolicy` (`src/domain/permissions/RiskPolicy.ts`); `SecretDetector` (`src/domain/redaction/secretDetectors.ts`); `SessionController` (`src/adapters/session/`) | Swap an algorithm without touching the use case |
-| State | `src/domain/permissions/permissionStates.ts`, `PermissionRequest.ts`; `src/domain/Pairing.ts` | Invalid transitions, such as approving twice, throw |
+| State | `src/domain/permissions/permissionStates.ts`, `PermissionRequest.ts`; `src/domain/Pairing.ts`; `src/domain/choices/Choice.ts` | Invalid transitions, such as approving twice, throw |
 | Factory Method | `src/adapters/capture/createScreenCapturers.ts`, `src/adapters/session/createSessionController.ts` | Pick the implementation per OS, display server and environment |
 | Observer (light) | Callbacks `onSent` on `SendReply` and `onForwarded` on `HandleInboundMessage`, wired in `src/main.ts` and `src/composition/telegramInbound.ts`; `PollingSupervisor` start and stop hooks | Feed notice policy and activity without coupling use cases. The audit log is written directly by the use cases, not through observers |
 
@@ -192,8 +201,12 @@ are 0600 on POSIX (not enforced on Windows, where the profile ACL protects them)
 | --- | --- | --- |
 | `.env` | `TELEGRAM_BOT_TOKEN=...` | Secret: full control of the bot |
 | `bot.json` | Bot id and username from `getMe` | Not secret |
-| `bridge.sqlite` (plus `-wal`, `-shm`) | Allowlist, pairings (hashes of codes only), audit log, poller lock, open permission requests | Sensitive: Telegram user ids, audit trail, and while a request is open its description and input preview |
+| `bridge.sqlite` (plus `-wal`, `-shm`) | Allowlist, pairings (hashes of codes only), audit log, poller lock, open permission requests, choices (F7) | Sensitive: Telegram user ids, audit trail, and while a request or choice is open its description and input preview, or its question and labels |
 | `hooks.key` | 32-byte secret for the hook HMAC | Secret: lets a local process forge hook events |
 | `hooks.sock` | Unix socket for hook events (Linux, macOS). Falls back to a private directory under `XDG_RUNTIME_DIR` or the temp dir when the path is too long. On Windows a named pipe is used instead and no file exists | Access to it is authenticated by the HMAC |
 | `brake.json` | The panic brake flag: who, when, optional reason | Low; a one-line reason may reveal intent. Deleting it releases the brake |
 | `tmp/<random>/` | Per-capture scratch directory (image, browser profile), removed after each capture | Sensitive while it exists: screenshots |
+| `inbox/<session>/<32 hex>.<ext>` | Photos and files sent from the phone (F10), 0600 in 0700 directories; `.part` while downloading. Deleted after 24 h, beyond 200 MB (oldest first), and when another session takes the poller lock | Sensitive: whatever the owner sent |
+
+The `/skills` command also reads (never writes) `<CLAUDE_CONFIG_DIR or ~/.claude>/skills/*/SKILL.md`
+and `<project>/.claude/skills/*/SKILL.md`.

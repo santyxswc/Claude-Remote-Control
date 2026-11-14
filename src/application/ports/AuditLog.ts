@@ -28,6 +28,12 @@ export type AuditEvent =
   | 'session.stopped'
   | 'screenshot.sent'
   | 'screenshot.not_sent'
+  | 'choice.asked'
+  | 'choice.refused'
+  | 'choice.answered'
+  | 'choice.expired'
+  | 'attachment.received'
+  | 'attachment.refused'
 
 /** Values that are safe to persist: never tokens, codes or message text. */
 export type AuditDetails = Readonly<Record<string, string | number | boolean | null>>

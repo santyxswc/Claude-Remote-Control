@@ -119,6 +119,19 @@ describe('RedactingPromptGateway', () => {
     ])
   })
 
+  test('button labels are redacted too (choice labels are Claude text); data is not', async () => {
+    const inner = new FakePromptGateway()
+    const gateway = new RedactingPromptGateway(inner, createSecretRedactor([SECRET]), 4096)
+    const labelled = [[{ label: `use ${SECRET}`, data: 'c1:abcdefghij:0' }]]
+    const ref = await gateway.sendPrompt('1', 'pick', labelled)
+    await gateway.editPrompt(ref, 'pick', labelled)
+    for (const call of [inner.sent[0], inner.edits[0]]) {
+      expect(call?.keyboard).toEqual([
+        [{ label: `use ${REDACTION_MARK}`, data: 'c1:abcdefghij:0' }],
+      ])
+    }
+  })
+
   test('a prompt grown by redaction still fits one message, keeping both ends', async () => {
     const inner = new FakePromptGateway()
     const secrets = Array.from({ length: 400 }, (_, i) => `Qz${String(i).padStart(6, '0')}`)

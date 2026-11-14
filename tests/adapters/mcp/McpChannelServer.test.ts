@@ -6,8 +6,10 @@ import {
   SUPPORTED_PROTOCOL_VERSIONS,
 } from '@modelcontextprotocol/sdk/types.js'
 import {
+  ASK_CHOICE_TOOL_NAME,
   CHANNEL_INSTRUCTIONS,
   InvalidChannelMetaError,
+  MAX_CHOICE_QUESTION_LENGTH,
   MAX_PERMISSION_FIELD_LENGTH,
   MAX_REPLY_TEXT_LENGTH,
   McpChannelServer,
@@ -15,6 +17,10 @@ import {
   PERMISSION_VERDICT_METHOD,
   SCREENSHOT_TOOL_NAME,
 } from '../../../src/adapters/mcp/McpChannelServer.ts'
+import type {
+  AskChoiceOutcome,
+  AskChoiceRequest,
+} from '../../../src/application/use-cases/AskChoice.ts'
 import type {
   CaptureOutcome,
   CaptureRequest,
@@ -509,5 +515,89 @@ describe('send_screenshot tool', () => {
   test('the instructions mention the tool and that images are not redacted', () => {
     expect(CHANNEL_INSTRUCTIONS).toContain('send_screenshot')
     expect(CHANNEL_INSTRUCTIONS).toContain('Images are not redacted')
+  })
+})
+
+describe('ask_choice', () => {
+  let asks: AskChoiceRequest[]
+  let askOutcome: AskChoiceOutcome | Error
+  let askServer: McpChannelServer
+  let askClient: Client
+
+  beforeEach(async () => {
+    asks = []
+    askOutcome = { status: 'asked', choiceId: 'abcdefghij' }
+    askServer = new McpChannelServer({
+      name: 'telegram-bridge',
+      version: '0.0.0-test',
+      logger,
+      reply: async () => ({ status: 'sent', parts: 1, redactions: 0 }),
+      askChoice: async (request) => {
+        asks.push(request)
+        if (askOutcome instanceof Error) throw askOutcome
+        return askOutcome
+      },
+    })
+    askClient = new Client({ name: 'test-client', version: '0.0.0' })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await Promise.all([askServer.connect(serverTransport), askClient.connect(clientTransport)])
+  })
+
+  afterEach(async () => {
+    await askClient.close()
+    await askServer.close()
+  })
+
+  const ask = async (args: Record<string, unknown>) =>
+    (await askClient.callTool({ name: ASK_CHOICE_TOOL_NAME, arguments: args })) as CallToolResult
+  const valid = { chat_id: '42', question: 'Which?', options: ['A', 'B'] }
+
+  test('is listed only when a handler is wired', async () => {
+    const { tools } = await askClient.listTools()
+    expect(tools.map((t) => t.name)).toEqual(['reply', ASK_CHOICE_TOOL_NAME])
+    expect(tools[1]).toMatchObject({
+      inputSchema: { required: ['chat_id', 'question', 'options'] },
+    })
+    await expect(callTool(ASK_CHOICE_TOOL_NAME, valid)).rejects.toThrow('Unknown tool')
+  })
+
+  test('returns the choice id at once and passes the arguments through', async () => {
+    const result = await ask({ ...valid, allow_other: true })
+    expect(result.isError).toBeUndefined()
+    expect(JSON.stringify(result.content)).toContain('choice_id=abcdefghij')
+    await ask(valid)
+    expect(asks).toEqual([
+      { chatId: '42', question: 'Which?', options: ['A', 'B'], allowOther: true },
+      { chatId: '42', question: 'Which?', options: ['A', 'B'], allowOther: false },
+    ])
+  })
+
+  test.each([
+    [{ ...valid, options: ['A'] }],
+    [{ ...valid, options: Array.from({ length: 9 }, (_, i) => `${i}`) }],
+    [{ ...valid, question: '' }],
+    [{ ...valid, question: 'x'.repeat(MAX_CHOICE_QUESTION_LENGTH + 1) }],
+    [{ ...valid, options: 'A,B' }],
+    [{ question: 'q', options: ['a', 'b'] }],
+  ])('invalid arguments never reach the use case', async (args) => {
+    const result = await ask(args)
+    expect(result.isError).toBe(true)
+    expect(asks).toEqual([])
+  })
+
+  test('refusals, problems and crashes are tool errors', async () => {
+    askOutcome = { status: 'refused', reason: 'chat_not_allowed' }
+    expect((await ask(valid)).isError).toBe(true)
+    askOutcome = { status: 'invalid', problem: 'duplicate_option' }
+    expect(JSON.stringify((await ask(valid)).content)).toContain('distinct')
+    askOutcome = new Error('kaboom')
+    const crashed = await ask(valid)
+    expect(crashed.isError).toBe(true)
+    expect(JSON.stringify(crashed.content)).not.toContain('kaboom')
+  })
+
+  test('the instructions explain choices and attachments', () => {
+    expect(CHANNEL_INSTRUCTIONS).toContain('kind="choice"')
+    expect(CHANNEL_INSTRUCTIONS).toContain('kind="attachment"')
   })
 })

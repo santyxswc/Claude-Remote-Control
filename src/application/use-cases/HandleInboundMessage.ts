@@ -1,7 +1,7 @@
 import { sanitizeDisplayText, sanitizeUsername } from '../../domain/displayText.ts'
 import type { SenderProfile } from '../../domain/Sender.ts'
 import type { Messages } from '../i18n/messages.ts'
-import type { InboundMessage } from '../pipeline/InboundMessage.ts'
+import type { ForwardContext, InboundMessage } from '../pipeline/InboundMessage.ts'
 import type { AuditLog } from '../ports/AuditLog.ts'
 import type { ChannelPort } from '../ports/ChannelPort.ts'
 import type { ChatGateway } from '../ports/ChatGateway.ts'
@@ -66,6 +66,7 @@ export class HandleInboundMessage {
             sanitizeUsername(message.sender.username) ??
             sanitizeDisplayText(message.sender.displayName),
           ts: new Date(message.sentAt).toISOString(),
+          ...contextMeta(message.forwardContext),
         },
       })
     } catch (error) {
@@ -74,7 +75,12 @@ export class HandleInboundMessage {
       return 'failed'
     }
 
-    const details = { senderId, messageId: message.messageId, length: message.text.length }
+    const details = {
+      senderId,
+      messageId: message.messageId,
+      length: message.text.length,
+      ...(message.forwardContext === undefined ? {} : { kind: message.forwardContext.kind }),
+    }
     this.deps.audit.append({
       at: this.deps.clock.now(),
       actor: `telegram:${senderId}`,
@@ -102,5 +108,26 @@ export class HandleInboundMessage {
     } catch (error) {
       this.deps.logger.warn('could not send a notice to the chat', { error })
     }
+  }
+}
+
+/**
+ * Extra attributes of the channel tag: why the text reaches the session.
+ * Choices: the answer to an `ask_choice` (`choice_id`). Attachments: the local file.
+ */
+function contextMeta(context: ForwardContext | undefined): Record<string, string> {
+  switch (context?.kind) {
+    case undefined:
+      return {}
+    case 'choice':
+      return { kind: 'choice', choice_id: context.choiceId }
+    case 'attachment':
+      return {
+        kind: 'attachment',
+        attachment_path: context.path,
+        attachment_name: context.name,
+        attachment_mime: context.mime,
+        attachment_size: String(context.size),
+      }
   }
 }

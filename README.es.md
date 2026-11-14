@@ -13,7 +13,8 @@ proyecto ([ADR 0001](docs/adr/0001-own-bot-per-user.md)).
 
 ## Estado
 
-El MVP (flujos F0 a F6) está implementado y cubierto por pruebas automáticas que usan dobles de
+El MVP (flujos F0 a F6) y dos flujos de la fase 3 (F7 opciones y skills, F10 archivos entrantes)
+están implementados y cubiertos por pruebas automáticas que usan dobles de
 Telegram y de Claude Code, más dos pruebas de humo locales para las capturas. **Todavía no se ha
 validado de punta a punta contra la API real de Telegram ni contra una sesión viva de Claude
 Code.** Varios comportamientos de Claude Code figuran como "necesita verificación en vivo" en los
@@ -47,9 +48,18 @@ El MVP tiene seis capacidades:
    cuenta de Telegram con el PC; tú confirmas en la terminal quién lo envió. Todos los demás son
    ignorados ([F1](docs/flows/F1.md)).
 
-Fuera del MVP (ver [docs/roadmap.md](docs/roadmap.md), en inglés): git desde el chat, mensaje fijado
-de estado, fotos y archivos entrantes (hoy los mensajes que no son texto se rechazan), gráficas,
-resumen de sesión a memoria, notas de voz, un topic por proyecto y la Mini App con pantalla en
+Después del MVP:
+
+7. **Opciones como botones y `/skills`.** La herramienta `ask_choice` permite a Claude hacer una
+   pregunta de opción múltiple; tu toque vuelve como un mensaje normal, nunca como una aprobación.
+   `/skills` lista como botones las skills del proyecto y las personales; un toque le pide a Claude
+   que use una ([F7](docs/flows/F7.md)).
+8. **Fotos y archivos.** Envía una foto o un documento (imágenes, PDF, texto y código fuente) y
+   Claude recibe la ruta de una copia local privada. El tipo se comprueba por extensión y por
+   contenido, el límite es 20 MB y los archivos se borran a las 24 horas ([F10](docs/flows/F10.md)).
+
+Pendiente (ver [docs/roadmap.md](docs/roadmap.md), en inglés): git desde el chat, mensaje fijado
+de estado, gráficas, resumen de sesión a memoria, notas de voz, un topic por proyecto y la Mini App con pantalla en
 vivo. Contestar llamadas de Telegram queda fuera de alcance: la Bot API no lo permite.
 
 El MVP es un bot para una sola sesión de Claude Code.
@@ -173,14 +183,19 @@ Se envían al bot desde una cuenta emparejada, en chat privado. Cualquier otro t
 | --- | --- |
 | `/start` | Comprueba que el puente está conectado. |
 | `/help` | Lista los comandos. |
-| `/status` | Bot, emparejado desde, conexión MCP, permisos pendientes, estado del freno y tipos de captura disponibles. |
+| `/status` | Bot, emparejado desde, conexión MCP, permisos pendientes, estado del freno, tipos de captura disponibles y archivos recibidos guardados. |
 | `/stop [motivo]` | Activa el freno, deniega los permisos pendientes y, dentro de tmux en Linux o macOS, envía Escape. |
 | `/resume` | Retira el freno. Claude no reanuda por sí solo. |
 | `/shot` | Captura de la pantalla. |
 | `/shot <url>` | Captura de una página `http`/`https`, por ejemplo `/shot localhost:3000`. |
+| `/skills` | Lista como botones las skills del proyecto y las personales; un toque envía "Use the skill /nombre" a Claude. |
 
 Los permisos también aceptan `yes <id>` o `no <id>` como texto (el id aparece en la solicitud; con
 `si <id>` también funciona). Las solicitudes de riesgo alto solo se aprueban con los botones.
+
+Las fotos y los documentos se guardan y se reenvían como una ruta ([F10](docs/flows/F10.md)); la
+voz, el video y los stickers se rechazan con un aviso. Cuando Claude pregunta con `ask_choice`, toca
+una opción, o toca "Otra…" y escribe tu respuesta en el siguiente mensaje.
 
 ## Comandos de la CLI
 
@@ -208,6 +223,8 @@ Todo son variables de entorno opcionales.
 | `TELEGRAM_BOT_TOKEN` | sin definir | Reemplaza el token guardado por `init`. Se recomienda el archivo. |
 | `TELEGRAM_BRIDGE_LOCALE` | `es` | `en` para inglés. |
 | `TELEGRAM_BRIDGE_BROWSER` | autodetectado | Ruta absoluta del navegador para `/shot <url>`. Un valor inválido desactiva las capturas de páginas. |
+| `TELEGRAM_BRIDGE_MAX_UPLOAD_MB` | `20` | Tamaño máximo de un archivo entrante, en MB enteros de 1 a 20 (20 es el límite de descarga de la Bot API; solo se puede bajar). Otro valor se registra y se usa 20. |
+| `CLAUDE_PROJECT_DIR` | lo define Claude Code | El proyecto cuyas `.claude/skills` lista `/skills`. Si no está definido o es relativo, se usa el directorio de trabajo cuando tiene `.claude/` o `.git`; si no, solo se listan las skills personales. |
 | `TELEGRAM_BRIDGE_DEBUG` | sin definir | `1` imprime diagnósticos en stderr desde los scripts de hooks. |
 | `TELEGRAM_BRIDGE_DEV_PORT` | sin definir | Solo desarrollo, sin bot: un listener HTTP local (F0) que exige el token bearer que imprime una vez en stderr, rechaza peticiones de navegador (`Origin`, `Host` ajeno) y no arranca si hay un token de bot configurado. Déjala sin definir. |
 
@@ -227,6 +244,11 @@ Lee esto antes de usarlo.
   `.env` del proyecto, no todos los secretos. El texto que tú envías a Claude no se censa.
 - **Las capturas de pantalla se saltan la censura.** Lo que haya en pantalla o en la página llega a
   Telegram como píxeles. Cada imagen lo advierte en su leyenda.
+- **Los archivos que envías son contenido no confiable para Claude.** Un PDF o un texto puede traer
+  instrucciones dirigidas a Claude (prompt injection), igual que un texto pegado. El puente comprueba
+  tipos y tamaños, nunca ejecuta archivos, y Claude los lee solo con sus herramientas normales, sujetas
+  a permisos.
+- **Un botón de opción es solo una respuesta.** Envía texto a Claude; nunca aprueba una herramienta.
 - **Nunca uses `--dangerously-skip-permissions` con esto.** El relay de permisos existe para no
   necesitarlo.
 - **El flag de canal de desarrollo.** Un canal propio no está en la lista aprobada por Anthropic, así
@@ -235,7 +257,8 @@ Lee esto antes de usarlo.
 - **Permite la herramienta reply y nada más amplio.** Agrega `mcp__telegram-bridge__reply` a las
   reglas de permitidos de los ajustes de Claude Code (como plugin el nombre tiene la forma
   `mcp__plugin_<plugin>_<servidor>__reply`; compruébalo con `/permissions`). No permitas de antemano
-  `send_screenshot`: cada captura debe seguir siendo una decisión. Detalles:
+  `send_screenshot`: cada captura debe seguir siendo una decisión. `ask_choice` solo publica una
+  pregunta en tu propio chat; permitirla es decisión tuya. Detalles:
   [docs/flows/F3.md](docs/flows/F3.md#the-reply-tool-needs-its-own-permission).
 - Los desconocidos no reciben respuesta ni generan eventos. Solo se aceptan chats privados de IDs de
   usuario permitidos.
@@ -267,12 +290,18 @@ Modelo completo y límites conocidos: [docs/threat-model.md](docs/threat-model.m
 - **`/shot` no tiene herramienta de captura.** La respuesta indica qué instalar (ver la tabla de
   herramientas opcionales). `/status` muestra qué tipos están disponibles. En Linux el canal debe
   correr dentro de la sesión de escritorio; tras instalar una herramienta, reinicia la sesión.
+- **Se rechazó un archivo.** El aviso dice el motivo. Solo se aceptan los tipos de
+  [F10](docs/flows/F10.md#allowlist) y el contenido debe corresponder a la extensión; el límite es
+  20 MB (o `TELEGRAM_BRIDGE_MAX_UPLOAD_MB`). Los archivos recibidos se guardan en
+  `<directorio de estado>/inbox/` durante 24 horas.
+- **`/skills` no muestra nada del proyecto.** Claude Code define `CLAUDE_PROJECT_DIR`; si el canal se
+  arranca de otra forma, debe correr en el directorio del proyecto. Las skills de plugins no se listan.
 
 ## Cómo funciona
 
 Claude Code arranca el canal (`src/main.ts`) como servidor MCP por stdio. El canal consulta Telegram
 por long polling, pasa cada mensaje por una cadena de controles (chat privado, emparejamiento, lista
-de permitidos, límite de tasa, solo texto, veredictos de permisos, comandos, freno) y reenvía lo que
+de permitidos, límite de tasa, contenido admitido, veredictos de permisos, comandos, freno) y reenvía lo que
 sobrevive a la sesión como notificación del canal. Todo lo que vuelve pasa por censura y troceo. Los
 hooks corren como procesos cortos dentro de Claude Code y hablan con el canal por un socket Unix
 local o una tubería con nombre; el hook del freno lee un archivo bandera. El estado vive en SQLite y

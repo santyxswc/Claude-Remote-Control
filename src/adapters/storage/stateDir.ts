@@ -44,6 +44,15 @@ export function resolveStateDir(env: Env, homeDir: string): string {
 }
 
 /**
+ * Claude Code's configuration directory, resolved like `resolveStateDir`
+ * does it: `CLAUDE_CONFIG_DIR` (absolute or `~/`), else `<home>/.claude`.
+ * Throws `InvalidStateDirError` for a relative value. Pure.
+ */
+export function resolveClaudeConfigDir(env: Env, homeDir: string): string {
+  return stateDirVariable(env, CLAUDE_CONFIG_DIR_ENV, homeDir) ?? join(homeDir, '.claude')
+}
+
+/**
  * For the PreToolUse brake only: like `resolveStateDir`, but an invalid
  * variable is skipped instead of throwing. The CLI and the channel refuse
  * an invalid value, so nobody engages a brake under it; skipping it means

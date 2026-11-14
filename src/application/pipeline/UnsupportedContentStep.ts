@@ -7,9 +7,10 @@ import type { InboundMessage } from './InboundMessage.ts'
 import type { InboundHandler, InboundStep } from './InboundStep.ts'
 
 /**
- * Step 5: only text reaches the session for now (F10 and F13 add files and
- * voice). Anything else is never forwarded; the sender is told once per
- * window, so an album of ten photos gets one notice, not ten.
+ * Step 5: only text reaches the session, plus photos and files when F10 is
+ * wired (acceptAttachments); voice (F13), stickers, video... are never
+ * forwarded. The sender is told once per window, so an album gets one
+ * notice, not ten.
  */
 export class UnsupportedContentStep implements InboundStep {
   constructor(
@@ -17,11 +18,16 @@ export class UnsupportedContentStep implements InboundStep {
     private readonly notice: string,
     private readonly clock: Clock,
     private readonly logger: Logger,
+    /** True when F10 is wired: photos and files go on to the download. */
+    private readonly acceptAttachments = false,
     private readonly throttle = new EventThrottle(UNSUPPORTED_NOTICE_WINDOW_MS),
   ) {}
 
   async handle(message: InboundMessage, next: InboundHandler): Promise<void> {
-    if (message.text !== undefined) {
+    if (
+      message.text !== undefined ||
+      (this.acceptAttachments && message.attachment !== undefined)
+    ) {
       await next(message)
       return
     }

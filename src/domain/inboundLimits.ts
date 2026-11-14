@@ -19,5 +19,17 @@ export const UNSUPPORTED_NOTICE_WINDOW_MS = 60_000
 /** At most one "the brake is engaged, not forwarded" reply per sender per window. */
 export const BRAKE_NOTICE_WINDOW_MS = 60_000
 
+/**
+ * Incoming files (F10): a per-sender budget on top of the message rate limit
+ * (an album is up to 10 files at once; then one file every 30 s), and at
+ * most this many downloads at a time per process (the rest wait their turn).
+ */
+export const ATTACHMENT_BURST = 10
+export const ATTACHMENT_REFILL_MS = 30_000
+export const MAX_DOWNLOADS_IN_FLIGHT = 2
+
+/** At most one "that file was not accepted" reply per album (or file) per window. */
+export const ATTACHMENT_NOTICE_WINDOW_MS = 60_000
+
 /** Throttles forget keys beyond this many, so a flood of distinct ids cannot grow memory forever. */
 export const THROTTLE_MAX_KEYS = 1024

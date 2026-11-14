@@ -355,6 +355,7 @@ describe('toInboundCallback', () => {
       chatKind: 'private',
       sender: { id: '5000000001', username: 'owner', displayName: 'Owner' },
       data: 'p1:abcde:a',
+      messageId: '7',
     })
   })
 

@@ -78,6 +78,28 @@ const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX permission_requests_by_state ON permission_requests (state, created_at);
   `,
+  // F7: questions asked with ask_choice. Options is a JSON array of labels; answer a JSON
+  // object or NULL; prompt a JSON {chatId, messageId} or NULL. The question and the labels
+  // stay only while the choice is open.
+  `
+  CREATE TABLE choices (
+    id TEXT PRIMARY KEY CHECK (length(id) = 10 AND id NOT GLOB '*[^a-z2-7]*'),
+    session TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    question TEXT NOT NULL,
+    options TEXT NOT NULL,
+    allow_other INTEGER NOT NULL CHECK (allow_other IN (0, 1)),
+    state TEXT NOT NULL
+      CHECK (state IN ('pending', 'awaiting_text', 'answered', 'expired', 'cancelled')),
+    created_at INTEGER NOT NULL,
+    answer TEXT,
+    answered_by TEXT,
+    closed_at INTEGER,
+    prompt TEXT,
+    revision INTEGER NOT NULL
+  );
+  CREATE INDEX choices_by_state ON choices (state, created_at);
+  `,
 ]
 
 export const SCHEMA_VERSION = MIGRATIONS.length
