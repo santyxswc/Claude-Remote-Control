@@ -1,6 +1,7 @@
 import type { CallbackQuery, Message } from 'grammy/types'
 import type { InboundCallback } from '../../application/callbacks/InboundCallback.ts'
 import type { ChatKind, InboundMessage } from '../../application/pipeline/InboundMessage.ts'
+import { sanitizeDisplayText, sanitizeUsername } from '../../domain/displayText.ts'
 import type { SenderProfile } from '../../domain/Sender.ts'
 
 /**
@@ -31,8 +32,15 @@ export function toInboundCallback(query: CallbackQuery): InboundCallback {
   }
 }
 
+/**
+ * The name and username are chosen by whoever owns the account: sanitized
+ * here, at the boundary, so nothing downstream sees controls or bidi tricks
+ * (renderers sanitize again, for rows stored before this existed).
+ */
 function toSender(from: Message['from']): SenderProfile | undefined {
   if (from === undefined || from.is_bot) return undefined
-  const displayName = [from.first_name, from.last_name].filter(Boolean).join(' ')
-  return { id: String(from.id), username: from.username, displayName }
+  const displayName = sanitizeDisplayText(
+    [from.first_name, from.last_name].filter(Boolean).join(' '),
+  )
+  return { id: String(from.id), username: sanitizeUsername(from.username), displayName }
 }

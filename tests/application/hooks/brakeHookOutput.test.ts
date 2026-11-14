@@ -17,7 +17,7 @@ test('engaged from Telegram: the exact bytes, one JSON object on one line', () =
     '{"continue":false,' +
       '"stopReason":"telegram-bridge: brake engaged from Telegram (2026-11-14T09:30:00.000Z). Claude stopped.\\n' +
       'Reason: oops\\n' +
-      'To release it send /resume in Telegram or run \\"telegram-bridge resume\\".",' +
+      'To release it send /resume in Telegram or run \\"bun run bridge -- resume\\".",' +
       '"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny",' +
       '"permissionDecisionReason":"The telegram-bridge brake is engaged: the owner asked to stop. Do not retry; wait for the user."}}\n',
   )
@@ -33,7 +33,7 @@ test('engaged from the terminal without a reason', () => {
   )
   expect(out.stopReason).toBe(
     'telegram-bridge: brake engaged from the terminal (1970-01-01T00:00:00.000Z). Claude stopped.\n' +
-      'To release it send /resume in Telegram or run "telegram-bridge resume".',
+      'To release it send /resume in Telegram or run "bun run bridge -- resume".',
   )
 })
 
@@ -42,5 +42,5 @@ test('an unreadable flag still stops, and names the file to delete', () => {
   expect(out.continue).toBe(false)
   expect(out.hookSpecificOutput.permissionDecision).toBe('deny')
   expect(out.stopReason).toContain(FLAG)
-  expect(out.stopReason).toContain('telegram-bridge resume')
+  expect(out.stopReason).toContain('bun run bridge -- resume')
 })

@@ -60,10 +60,17 @@ Source: [F0](F0.md), manual verification. This proves Claude Code accepts the se
   checkout with `TELEGRAM_BRIDGE_DEV_PORT=8788`. Expect the development-channels warning, the "New
   MCP server found" prompt, the `Channels (experimental)` notice and `/mcp` showing the server
   connected.
-- [ ] **[All]** `curl -N http://127.0.0.1:8788/events` in a second terminal, then
-  `curl -X POST http://127.0.0.1:8788/ --data "What is in this directory? Reply through the channel."` in
-  a third (use `curl.exe` in Windows PowerShell). Claude receives it, calls `reply`, and the reply
+- [ ] **[All]** Find the dev listener's token: it is printed once to the server's stderr with
+  ready-to-paste `curl` lines (start Claude Code with `--debug` and look in
+  `~/.claude/debug/<session-id>.txt`; confirm and note where it actually appears). Then
+  `curl -N -H "Authorization: Bearer <token>" http://127.0.0.1:8788/events` in a second terminal and
+  `curl -X POST -H "Authorization: Bearer <token>" http://127.0.0.1:8788/ --data "What is in this directory? Reply through the channel."`
+  in a third (use `curl.exe` in Windows PowerShell). Claude receives it, calls `reply`, and the reply
   shows up in the first curl.
+- [ ] **[All]** The same POST without the token answers `401`; with `-H "Origin: https://example.com"`
+  or `-H "Host: example.com"` it answers `403`. Nothing reaches Claude.
+- [ ] **[All]** With a bot token configured, `TELEGRAM_BRIDGE_DEV_PORT` is ignored: no listener, and
+  stderr says why. A malformed value (`87 88`) is logged and the server keeps running.
 - [ ] **[Windows]** Count the `bun.exe` processes running `src/main.ts` with
   `Get-CimInstance Win32_Process -Filter "Name='bun.exe'" | Select-Object ProcessId, CommandLine`,
   then open a second session and count again: one process per session (ADR 0005 (a)). Exit
@@ -71,8 +78,8 @@ Source: [F0](F0.md), manual verification. This proves Claude Code accepts the se
   same check.
 - [ ] **[All]** Start `claude` without the channel flag: the server still starts, but a POST must not
   reach Claude.
-- [ ] **[All]** Unset `TELEGRAM_BRIDGE_DEV_PORT` (the dev listener is unauthenticated and must not run
-  from here on).
+- [ ] **[All]** Unset `TELEGRAM_BRIDGE_DEV_PORT` (the dev listener is for setups without a bot and
+  does not start once one is configured).
 
 ### Part 2: Install and pair (F1)
 

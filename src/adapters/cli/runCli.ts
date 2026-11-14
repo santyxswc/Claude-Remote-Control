@@ -1,5 +1,6 @@
 import type { Messages } from '../../application/i18n/messages.ts'
 import type { Terminal } from '../../application/ports/Terminal.ts'
+import { InvalidStateDirError } from '../storage/stateDir.ts'
 import { type AccessCommandDeps, runAccessList, runAccessRevoke } from './accessCommands.ts'
 import { type BrakeCommandDeps, runResume, runStop } from './brakeCommands.ts'
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from './exitCodes.ts'
@@ -88,6 +89,10 @@ export async function runCli(argv: readonly string[], context: CliContext): Prom
         return runResume(context.brake())
     }
   } catch (error) {
+    if (error instanceof InvalidStateDirError) {
+      terminal.error(messages.invalidStateDir(error.variable))
+      return EXIT_FAILURE
+    }
     terminal.error(messages.unexpectedError(error instanceof Error ? error.message : String(error)))
     return EXIT_FAILURE
   }

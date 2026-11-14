@@ -1,8 +1,8 @@
 /**
  * The outbound pipeline (GoF Decorator):
  *
- *   text:    RedactingChatGateway -> ChunkingChatGateway -> route -> Telegram | Dev
- *   prompts: RedactingPromptGateway (fits one message) -> route -> Telegram
+ *   text:    RedactingChatGateway (fits one message on request) -> ChunkingChatGateway -> route
+ *   prompts: RedactingPromptGateway (fits one message, after redaction) -> route -> Telegram
  *   images:  RedactingImageGateway (caption redacted and fitted) -> route -> Telegram
  *
  * This module is the only place that constructs the raw platform gateway,
@@ -23,7 +23,11 @@ import { RedactingImageGateway } from '../application/outbound/RedactingImageGat
 import { RedactingPromptGateway } from '../application/outbound/RedactingPromptGateway.ts'
 import type { ChatGateway, SendOptions, SendReceipt } from '../application/ports/ChatGateway.ts'
 import type { ImageGateway, OutboundImage } from '../application/ports/ImageGateway.ts'
-import type { PromptGateway, PromptKeyboard } from '../application/ports/PromptGateway.ts'
+import type {
+  PromptGateway,
+  PromptKeyboard,
+  PromptOptions,
+} from '../application/ports/PromptGateway.ts'
 import type { Sleeper } from '../application/ports/Sleeper.ts'
 import type { PromptRef } from '../domain/permissions/PermissionRequest.ts'
 import { createSecretRedactor } from '../domain/redaction/secretValues.ts'
@@ -60,6 +64,7 @@ export function buildOutbound(options: OutboundOptions): Outbound {
     new RedactingChatGateway(
       new ChunkingChatGateway(routed, TELEGRAM_MAX_MESSAGE_LENGTH),
       redactor,
+      TELEGRAM_MAX_MESSAGE_LENGTH,
     ),
     new RedactingPromptGateway(routed, redactor, TELEGRAM_MAX_MESSAGE_LENGTH),
     new RedactingImageGateway(routed, redactor, TELEGRAM_MAX_CAPTION_LENGTH),
@@ -82,12 +87,22 @@ class OutboundGateway implements ChatGateway, PromptGateway, ImageGateway {
     return this.chat.sendTyping(chatId)
   }
 
-  sendPrompt(chatId: string, text: string, keyboard: PromptKeyboard): Promise<PromptRef> {
-    return this.prompts.sendPrompt(chatId, text, keyboard)
+  sendPrompt(
+    chatId: string,
+    text: string,
+    keyboard: PromptKeyboard,
+    options?: PromptOptions,
+  ): Promise<PromptRef> {
+    return this.prompts.sendPrompt(chatId, text, keyboard, options)
   }
 
-  editPrompt(ref: PromptRef, text: string, keyboard: PromptKeyboard): Promise<void> {
-    return this.prompts.editPrompt(ref, text, keyboard)
+  editPrompt(
+    ref: PromptRef,
+    text: string,
+    keyboard: PromptKeyboard,
+    options?: PromptOptions,
+  ): Promise<void> {
+    return this.prompts.editPrompt(ref, text, keyboard, options)
   }
 
   answerCallback(callbackId: string, text?: string): Promise<void> {

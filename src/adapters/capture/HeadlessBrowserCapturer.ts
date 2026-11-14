@@ -37,14 +37,20 @@ export class HeadlessBrowserCapturer implements ScreenCapturer {
 
   constructor(private readonly deps: HeadlessBrowserCapturerDeps) {}
 
-  async capture(target: CaptureTarget, workspace: CaptureWorkspace): Promise<CapturedImage> {
+  async capture(
+    target: CaptureTarget,
+    workspace: CaptureWorkspace,
+    signal?: AbortSignal,
+  ): Promise<CapturedImage> {
     if (target.kind !== 'url' || target.url.startsWith('-')) {
       throw new Error('the headless browser only captures http(s) pages')
     }
     const result = await this.deps.run(
       browserArgv(this.deps.browser, target.url, workspace),
       BROWSER_PROCESS_TIMEOUT_MS,
+      ...(signal === undefined ? [] : [{ signal }]),
     )
+    if (signal?.aborted === true) throw new Error('the capture was cancelled')
     if (result.timedOut) throw new Error('the headless browser timed out')
     if (result.exitCode !== 0) {
       throw new Error(`the headless browser exited with code ${result.exitCode}`)

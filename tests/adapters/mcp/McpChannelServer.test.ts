@@ -8,6 +8,8 @@ import {
 import {
   CHANNEL_INSTRUCTIONS,
   InvalidChannelMetaError,
+  MAX_PERMISSION_FIELD_LENGTH,
+  MAX_REPLY_TEXT_LENGTH,
   McpChannelServer,
   PERMISSION_REQUEST_METHOD,
   PERMISSION_VERDICT_METHOD,
@@ -228,6 +230,19 @@ describe('reply tool', () => {
     expect(requests).toEqual([])
   })
 
+  test('L2: a text over 64 KiB is an error result and never reaches the use case', async () => {
+    expect(MAX_REPLY_TEXT_LENGTH).toBe(65_536)
+    const ok = await callTool('reply', { chat_id: '42', text: 'a'.repeat(MAX_REPLY_TEXT_LENGTH) })
+    expect(ok.isError).toBeFalsy()
+    const result = await callTool('reply', {
+      chat_id: '42',
+      text: 'a'.repeat(MAX_REPLY_TEXT_LENGTH + 1),
+    })
+    expect(result.isError).toBe(true)
+    expect(JSON.stringify(result.content)).toContain('65536')
+    expect(requests).toHaveLength(1)
+  })
+
   test('a crashing handler is an error result and is logged', async () => {
     outcome = new Error('boom')
     const result = await callTool('reply', { chat_id: '42', text: 'done' })
@@ -327,6 +342,31 @@ describe('permission relay', () => {
     expect(relayLogger.text).toContain('ignored a malformed permission request')
     expect(relayLogger.text).not.toContain('abcdl')
     expect(relayLogger.text).not.toContain('ABCDE')
+  })
+
+  test('L2: a field the size Claude Code can send (3,500 astral code points) is accepted', async () => {
+    const preview = '\u{1F600}'.repeat(3_500)
+    await ask({
+      request_id: 'abcde',
+      tool_name: 'Bash',
+      description: preview,
+      input_preview: preview,
+    })
+    await settle()
+    expect(received).toHaveLength(1)
+  })
+
+  test('L2: a field longer than Claude Code ever sends is ignored and logged', async () => {
+    expect(MAX_PERMISSION_FIELD_LENGTH).toBe(8_192)
+    await ask({
+      request_id: 'abcde',
+      tool_name: 'Bash',
+      description: '',
+      input_preview: 'x'.repeat(MAX_PERMISSION_FIELD_LENGTH + 1),
+    })
+    await settle()
+    expect(received).toEqual([])
+    expect(relayLogger.text).toContain('ignored a malformed permission request')
   })
 
   test('sendVerdict emits notifications/claude/channel/permission', async () => {

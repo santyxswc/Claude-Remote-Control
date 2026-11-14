@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from 'bun:test'
+import { afterEach, describe, expect, test } from 'bun:test'
 import { ALLOWED_UPDATES, TelegramPoller } from '../../../src/adapters/telegram/TelegramPoller.ts'
 import type { InboundCallback } from '../../../src/application/callbacks/InboundCallback.ts'
 import type { InboundMessage } from '../../../src/application/pipeline/InboundMessage.ts'
@@ -181,4 +181,108 @@ test('button taps go to the callback handler, not the message handler', async ()
     data: 'p1:abcde:a',
   })
   expect(s.received).toEqual([])
+})
+
+describe('M1: slow work never holds back later updates', () => {
+  /** A real but short, abortable nap: the re-check interval while work is in flight. */
+  const shortSleep = (ms: number, signal: AbortSignal) =>
+    new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, Math.min(ms, 10))
+      signal.addEventListener('abort', () => {
+        clearTimeout(timer)
+        resolve()
+      })
+    })
+
+  function lanes() {
+    const api = new FakeTelegramApi()
+    const logger = new MemoryLogger()
+    poller = new TelegramPoller({
+      token: TEST_TOKEN,
+      logger,
+      fetch: api.fetch,
+      pollTimeoutSeconds: 1,
+      sleep: shortSleep,
+      isUrgent: (message) => message.text === '/stop',
+    })
+    const started: string[] = []
+    const finished: string[] = []
+    const gates = new Map<string, () => void>()
+    /** Each text waits for its gate when one is set (a controlled promise, no real delay). */
+    const handler = async (m: InboundMessage) => {
+      started.push(m.text ?? '')
+      if (m.text?.startsWith('slow'))
+        await new Promise<void>((open) => gates.set(m.text ?? '', open))
+      finished.push(m.text ?? '')
+    }
+    return { api, logger, poller, started, finished, gates, handler }
+  }
+
+  test('/stop is handled while an earlier update of the same chat is still pending', async () => {
+    const s = lanes()
+    void s.poller.start(s.handler)
+    s.api.sendText(PHONE_OWNER, 'slow capture')
+    s.api.sendText(PHONE_OWNER, '/stop')
+    await until(() => s.finished.includes('/stop'))
+    expect(s.finished).toEqual(['/stop'])
+    s.gates.get('slow capture')?.()
+    await until(() => s.finished.length === 2)
+  })
+
+  test('a /stop sent later still gets through while the slow one is pending', async () => {
+    const s = lanes()
+    void s.poller.start(s.handler)
+    s.api.sendText(PHONE_OWNER, 'slow one')
+    await until(() => s.started.includes('slow one'))
+    s.api.sendText(PHONE_OWNER, '/stop')
+    await until(() => s.finished.includes('/stop'))
+    expect(s.finished).toEqual(['/stop'])
+    s.gates.get('slow one')?.()
+  })
+
+  test('ordinary messages of one chat keep their order; nothing is handled twice', async () => {
+    const s = lanes()
+    void s.poller.start(s.handler)
+    s.api.sendText(PHONE_OWNER, 'slow first')
+    s.api.sendText(PHONE_OWNER, 'second')
+    s.api.sendText(PHONE_OWNER, 'third')
+    await until(() => s.started.includes('slow first'))
+    // Polling goes on (no wait behind the slow handler), but the chat's order holds.
+    await s.api.waitForPolls(4)
+    expect(s.started).toEqual(['slow first'])
+    s.gates.get('slow first')?.()
+    await until(() => s.finished.length === 3)
+    await until(() => s.api.idle)
+    expect(s.started).toEqual(['slow first', 'second', 'third'])
+    expect(s.finished).toEqual(['slow first', 'second', 'third'])
+  })
+
+  test('pending updates are not confirmed: the offset stays at the oldest one in flight', async () => {
+    const s = lanes()
+    void s.poller.start(s.handler)
+    const slow = s.api.sendText(PHONE_OWNER, 'slow pending')
+    await until(() => s.started.includes('slow pending'))
+    const polls = s.api.callsTo('getUpdates').length
+    await s.api.waitForPolls(polls + 2)
+    expect(s.api.callsTo('getUpdates').at(-1)?.payload.offset).toBe(slow)
+    s.gates.get('slow pending')?.()
+    await until(() => s.api.idle)
+    expect(s.api.callsTo('getUpdates').at(-1)?.payload.offset).toBe(slow + 1)
+  })
+
+  test('stop waits for handlers in flight, then confirms everything', async () => {
+    const s = lanes()
+    void s.poller.start(s.handler)
+    const id = s.api.sendText(PHONE_OWNER, 'slow at shutdown')
+    await until(() => s.started.includes('slow at shutdown'))
+    const stopping = s.poller.stop()
+    s.gates.get('slow at shutdown')?.()
+    await stopping
+    expect(s.finished).toEqual(['slow at shutdown'])
+    expect(s.api.callsTo('getUpdates').at(-1)?.payload).toEqual({
+      offset: id + 1,
+      limit: 1,
+      timeout: 0,
+    })
+  })
 })

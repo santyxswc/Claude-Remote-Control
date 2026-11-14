@@ -6,7 +6,7 @@ import {
 } from '../../../src/application/commands/CommandRegistry.ts'
 import { createCommandRegistry } from '../../../src/application/commands/createCommandRegistry.ts'
 import { HelpCommand } from '../../../src/application/commands/HelpCommand.ts'
-import { parseCommand } from '../../../src/application/commands/parseCommand.ts'
+import { isUrgentCommand, parseCommand } from '../../../src/application/commands/parseCommand.ts'
 import { ShotCommand } from '../../../src/application/commands/ShotCommand.ts'
 import { StartCommand } from '../../../src/application/commands/StartCommand.ts'
 import { StatusCommand } from '../../../src/application/commands/StatusCommand.ts'
@@ -184,46 +184,71 @@ describe('createCommandRegistry', () => {
 })
 
 describe('F5: /shot', () => {
+  /** Refusals come back at once; anything else runs in the background (M1). */
   function shot(outcome: CaptureOutcome) {
     const requests: CaptureRequest[] = []
+    const refusedAtOnce = outcome.status === 'refused' || outcome.status === 'invalid_url'
+    let finish: (outcome: CaptureOutcome) => void = () => {}
+    const done = new Promise<CaptureOutcome>((resolve) => {
+      finish = resolve
+    })
     const command = new ShotCommand(
       en.commandShotDescription,
       {
-        execute: async (request) => {
+        start: (request) => {
           requests.push(request)
-          return outcome
+          if (refusedAtOnce || outcome.status === 'unavailable') return { started: false, outcome }
+          return { started: true, done }
         },
       },
       en.shotProblem,
+      en.shotCapturing,
     )
-    return { command, requests }
+    /** Ends the capture and lets the background answer go out. */
+    const complete = async () => {
+      finish(outcome)
+      await done
+      for (let i = 0; i < 5; i++) await Promise.resolve()
+    }
+    return { command, requests, complete }
   }
 
-  test('/shot captures the screen and /shot <url> a page, as the sender; a sent image needs no text', async () => {
-    const { command, requests } = shot({ status: 'sent', as: 'photo', bytes: 10 })
+  test('/shot captures the screen and /shot <url> a page, as the sender; a sent image needs no more text', async () => {
+    const { command, requests, complete } = shot({ status: 'sent', as: 'photo', bytes: 10 })
     const plain = context()
     await command.execute(plain.ctx)
     const page = context('localhost:3000')
     await command.execute(page.ctx)
+    await complete()
     expect(requests).toEqual([
       { chatId: ALICE.id, actor: `telegram:${ALICE.id}` },
       { chatId: ALICE.id, actor: `telegram:${ALICE.id}`, url: 'localhost:3000' },
     ])
-    expect([...plain.replies, ...page.replies]).toEqual([])
+    expect([...plain.replies, ...page.replies]).toEqual([en.shotCapturing, en.shotCapturing])
+  })
+
+  test('M1: the command returns while the capture still runs, and answers when it ends', async () => {
+    const { command, complete } = shot({ status: 'failed', stage: 'send', error: 'x' })
+    const { ctx, replies } = context()
+    await command.execute(ctx)
+    expect(replies).toEqual([en.shotCapturing])
+    await complete()
+    expect(replies).toEqual([en.shotCapturing, en.shotProblem({ problem: 'failed' })])
   })
 
   test.each([
-    [{ status: 'refused', reason: 'busy' }, 'A capture is already running'],
-    [{ status: 'invalid_url', problem: 'scheme' }, 'only http:// or https://'],
-    [{ status: 'too_large', bytes: 51_200_000 }, 'about 52 MB'],
-    [{ status: 'failed', stage: 'capture', error: 'secret detail' }, 'The capture failed'],
-  ] as const)('%p is explained', async (outcome, expected) => {
-    const { command } = shot(outcome)
+    [{ status: 'refused', reason: 'busy' }, 'A capture is already running', 1],
+    [{ status: 'invalid_url', problem: 'scheme' }, 'only http:// or https://', 1],
+    [{ status: 'too_large', bytes: 51_200_000 }, 'about 52 MB', 2],
+    [{ status: 'failed', stage: 'capture', error: 'secret detail' }, 'The capture failed', 2],
+  ] as const)('%p is explained', async (outcome, expected, count) => {
+    const { command, complete } = shot(outcome)
     const { ctx, replies } = context()
     await command.execute(ctx)
-    expect(replies).toHaveLength(1)
-    expect(replies[0]).toContain(expected)
-    expect(replies[0]).not.toContain('secret detail')
+    await complete()
+    expect(replies).toHaveLength(count)
+    expect(replies.at(-1)).toContain(expected)
+    expect(replies.join('\n')).not.toContain('secret detail')
   })
 
   test('unavailable says why and what to install', async () => {
@@ -270,7 +295,7 @@ describe('F5: /shot', () => {
       stopSession: {} as StopSession,
       resumeSession: {} as ResumeSession,
       screenshots: {
-        execute: async () => ({ status: 'refused', reason: 'busy' }),
+        start: () => ({ started: false, outcome: { status: 'refused', reason: 'busy' } }),
         availableKinds: () => [],
       },
     })
@@ -284,4 +309,16 @@ describe('F5: /shot', () => {
     ])
     expect(registry.find('shot')?.description).toBe(en.commandShotDescription)
   })
+})
+
+describe('M1: urgent commands', () => {
+  test.each([['/stop'], ['/STOP now'], ['/stop@my_bot'], ['/resume']])('%p is urgent', (text) => {
+    expect(isUrgentCommand(text)).toBe(true)
+  })
+  test.each([['/shot'], ['stop'], ['/stopper'], [undefined], ['please /stop']])(
+    '%p is not',
+    (text) => {
+      expect(isUrgentCommand(text)).toBe(false)
+    },
+  )
 })

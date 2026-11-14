@@ -13,6 +13,7 @@ import { Sha256SecretHasher } from '../adapters/system/Sha256SecretHasher.ts'
 import { PollingSupervisor } from '../adapters/telegram/PollingSupervisor.ts'
 import { TelegramPoller } from '../adapters/telegram/TelegramPoller.ts'
 import { createCommandRegistry } from '../application/commands/createCommandRegistry.ts'
+import { isUrgentCommand } from '../application/commands/parseCommand.ts'
 import type { Messages } from '../application/i18n/messages.ts'
 import { createInboundPipeline } from '../application/pipeline/createInboundPipeline.ts'
 import { createSessionSteps } from '../application/pipeline/createSessionSteps.ts'
@@ -167,6 +168,7 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
     poller: new TelegramPoller({
       token: deps.token,
       logger,
+      isUrgent: (message) => isUrgentCommand(message.text),
       ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
       ...(deps.pollTimeoutSeconds === undefined
         ? {}

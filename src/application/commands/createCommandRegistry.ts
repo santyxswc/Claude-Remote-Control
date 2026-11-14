@@ -22,7 +22,7 @@ export interface CommandRegistryDeps {
   readonly stopSession: StopSession
   readonly resumeSession: ResumeSession
   /** F5; without it there is no `/shot`. */
-  readonly screenshots?: Pick<CaptureScreenshot, 'execute' | 'availableKinds'>
+  readonly screenshots?: Pick<CaptureScreenshot, 'start' | 'availableKinds'>
 }
 
 /** The chat commands, in `/help` order. */
@@ -55,7 +55,12 @@ export function createCommandRegistry(deps: CommandRegistryDeps): CommandRegistr
     )
   if (screenshots !== undefined) {
     registry.register(
-      new ShotCommand(messages.commandShotDescription, screenshots, messages.shotProblem),
+      new ShotCommand(
+        messages.commandShotDescription,
+        screenshots,
+        messages.shotProblem,
+        messages.shotCapturing,
+      ),
     )
   }
   return registry

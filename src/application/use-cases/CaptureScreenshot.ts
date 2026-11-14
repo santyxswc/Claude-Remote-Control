@@ -38,6 +38,11 @@ export type CaptureOutcome =
   | { readonly status: 'too_large'; readonly bytes: number }
   | { readonly status: 'failed'; readonly stage: 'capture' | 'send'; readonly error: string }
 
+/** `start`: refused at once, or running in the background (M1). */
+export type CaptureStart =
+  | { readonly started: false; readonly outcome: CaptureOutcome }
+  | { readonly started: true; readonly done: Promise<CaptureOutcome> }
+
 export interface CaptureScreenshotDeps {
   /** Strategies picked for this machine, in order of preference. */
   readonly capturers: readonly ScreenCapturer[]
@@ -62,9 +67,14 @@ export interface CaptureScreenshotDeps {
  * removes the temporary files. One capture at a time per process. Audit rows
  * carry the kind, the URL's host (never its path or query), the size and the
  * outcome.
+ *
+ * `start` checks synchronously and runs the capture in the background, so a
+ * slow capture holds nothing else up (M1); `stop` cancels the one in flight
+ * (its program is killed) and waits for its clean-up.
  */
 export class CaptureScreenshot {
   #busy = false
+  #running: { readonly abort: AbortController; readonly done: Promise<CaptureOutcome> } | undefined
 
   constructor(private readonly deps: CaptureScreenshotDeps) {}
 
@@ -73,16 +83,47 @@ export class CaptureScreenshot {
     return CAPTURE_KINDS.filter((kind) => this.#capturerFor(kind) !== undefined)
   }
 
+  /** Waits for the outcome (`send_screenshot`: Claude needs the answer). */
   async execute(request: CaptureRequest): Promise<CaptureOutcome> {
-    const checked = this.#check(request)
-    if ('status' in checked) return checked
-    const { target, capturer } = checked
+    const start = this.start(request)
+    return start.started ? start.done : start.outcome
+  }
 
+  /** Refusals come back at once; otherwise the capture runs and `done` settles (never rejects). */
+  start(request: CaptureRequest): CaptureStart {
+    const checked = this.#check(request)
+    if ('status' in checked) return { started: false, outcome: checked }
     this.#busy = true
+    const abort = new AbortController()
+    const done = this.#run(request, checked.target, checked.capturer, abort.signal)
+    this.#running = { abort, done }
+    return { started: true, done }
+  }
+
+  /** Cancels the capture in flight, if any, and waits until its files are removed. */
+  async stop(): Promise<void> {
+    const running = this.#running
+    if (running === undefined) return
+    running.abort.abort()
+    await running.done
+  }
+
+  async #run(
+    request: CaptureRequest,
+    target: CaptureTarget,
+    capturer: ScreenCapturer,
+    signal: AbortSignal,
+  ): Promise<CaptureOutcome> {
     let workspace: CaptureWorkspace | undefined
     try {
       workspace = await this.deps.scratch.create()
-      const outcome = await this.#captureAndSend(capturer, target, workspace, request.chatId)
+      const outcome = await this.#captureAndSend(
+        capturer,
+        target,
+        workspace,
+        request.chatId,
+        signal,
+      )
       return this.#finish(request, target, outcome)
     } catch (error) {
       const outcome: CaptureOutcome = { status: 'failed', stage: 'capture', error: message(error) }
@@ -90,6 +131,7 @@ export class CaptureScreenshot {
     } finally {
       if (workspace !== undefined) await this.deps.scratch.dispose(workspace)
       this.#busy = false
+      this.#running = undefined
     }
   }
 
@@ -123,8 +165,10 @@ export class CaptureScreenshot {
     target: CaptureTarget,
     workspace: CaptureWorkspace,
     chatId: string,
+    signal: AbortSignal,
   ): Promise<CaptureOutcome> {
-    const image = await capturer.capture(target, workspace)
+    const image = await capturer.capture(target, workspace, signal)
+    if (signal.aborted) return { status: 'failed', stage: 'capture', error: 'cancelled' }
     const file = await this.deps.scratch.inspect(image.path)
     const size = image.mime === 'image/png' ? readPngSize(file.head) : undefined
     const delivery = chooseImageDelivery(file.bytes, size)

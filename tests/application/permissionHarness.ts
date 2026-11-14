@@ -1,5 +1,7 @@
 import { messagesFor } from '../../src/application/i18n/messages.ts'
 import { PermissionPrompts } from '../../src/application/permissions/PermissionPrompts.ts'
+import type { ChatGateway } from '../../src/application/ports/ChatGateway.ts'
+import type { PromptGateway } from '../../src/application/ports/PromptGateway.ts'
 import { AuthorizeSender } from '../../src/application/use-cases/AuthorizeSender.ts'
 import { ExpirePermissions } from '../../src/application/use-cases/ExpirePermissions.ts'
 import { MarkPermissionResolvedLocally } from '../../src/application/use-cases/MarkPermissionResolvedLocally.ts'
@@ -12,6 +14,7 @@ import { allowSender } from '../../src/domain/AllowedSender.ts'
 import { PatternRiskPolicy } from '../../src/domain/permissions/RiskPolicy.ts'
 import {
   ALICE,
+  FakeChatGateway,
   FakeClock,
   FakePromptGateway,
   FakeVerdicts,
@@ -37,8 +40,13 @@ export function incoming(
   }
 }
 
-/** The permission use cases wired to in-memory fakes, with ALICE allowlisted. */
-export function permissionHarness() {
+/**
+ * The permission use cases wired to in-memory fakes, with ALICE allowlisted.
+ * `prompts` and `chat` replace the fakes the prompts go through (e.g. the real decorators).
+ */
+export function permissionHarness(
+  options: { readonly prompts?: PromptGateway; readonly chat?: ChatGateway } = {},
+) {
   const clock = new FakeClock()
   const store = new InMemoryPermissionStore()
   const allowed = new InMemoryAllowedSenders()
@@ -48,7 +56,13 @@ export function permissionHarness() {
   const gateway = new FakePromptGateway()
   const verdicts = new FakeVerdicts()
   const brake = new InMemoryBrakeFlag()
-  const prompts = new PermissionPrompts(gateway, en, logger)
+  const chat = new FakeChatGateway()
+  const prompts = new PermissionPrompts(
+    options.prompts ?? gateway,
+    options.chat ?? chat,
+    en,
+    logger,
+  )
   let polling = true
   const common = { store, prompts, audit, clock, logger, session: SESSION }
   return {
@@ -58,6 +72,7 @@ export function permissionHarness() {
     audit,
     logger,
     gateway,
+    chat,
     brake,
     verdicts,
     setPolling: (value: boolean) => {

@@ -56,13 +56,15 @@ export const KNOWN_SECRET_PATTERNS: readonly SecretDetector[] = [
   // Whole PEM private key blocks; a block cut off before its END line is redacted to the end.
   new PatternDetector(
     'pem-private-key',
-    /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|$)/,
+    /-----BEGIN [A-Z0-9 ]{0,64}PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z0-9 ]{0,64}PRIVATE KEY(?: BLOCK)?-----|$)/,
   ),
   new PatternDetector('anthropic', new RegExp(`${START}sk-ant-[A-Za-z0-9_-]{20,}`)),
   // OpenAI (`sk-`, `sk-proj-`, ...); a digit is required so `sk-some-long-css-class` survives.
   new PatternDetector(
     'openai',
-    new RegExp(`${START}sk-(?:proj-|svcacct-|admin-)?(?=[A-Za-z0-9_-]*\\d)[A-Za-z0-9_-]{20,}`),
+    new RegExp(
+      `${START}sk-(?:proj-|svcacct-|admin-)?(?=[A-Za-z0-9_-]{0,4096}\\d)[A-Za-z0-9_-]{20,}`,
+    ),
   ),
   new PatternDetector(
     'github',
@@ -79,18 +81,21 @@ export const KNOWN_SECRET_PATTERNS: readonly SecretDetector[] = [
   // header.payload.signature, both JSON parts starting with `{"` (base64url `eyJ`).
   new PatternDetector(
     'jwt',
-    new RegExp(`${START}eyJ[A-Za-z0-9_-]{8,}\\.eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]*`),
+    new RegExp(
+      `${START}eyJ[A-Za-z0-9_-]{8,8192}\\.eyJ[A-Za-z0-9_-]{8,16384}\\.[A-Za-z0-9_-]{0,8192}`,
+    ),
   ),
   // `Bearer <token>`: only the token goes; it must contain a digit so prose survives.
   new PatternDetector(
     'bearer-token',
-    /\bBearer\s+((?=[A-Za-z0-9._~+/=-]*\d)[A-Za-z0-9._~+/=-]{16,})/i,
+    /\bBearer\s+((?=[A-Za-z0-9._~+/=-]{0,4096}\d)[A-Za-z0-9._~+/=-]{16,})/i,
     1,
   ),
-  // `scheme://user:password@host`: only the password goes.
+  // `scheme://user:password@host`: only the password goes. A scheme starts only where
+  // no scheme character precedes it, and every part is bounded (L2: no backtracking).
   new PatternDetector(
     'url-credentials',
-    /\b[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s:@/?#]+:([^\s@/?#]+)@/,
+    /(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]{0,31}:\/\/[^\s:@/?#]{1,256}:([^\s@/?#]{1,256})@/,
     1,
   ),
 ]

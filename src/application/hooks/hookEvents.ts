@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { dropCutTail } from '../../domain/redaction/cutText.ts'
 
 /**
  * Hook payloads as forwarded by the hook entrypoint (hooks reference, fetched
@@ -19,12 +20,15 @@ const StopPayload = z.looseObject({
   ...common,
   hook_event_name: z.literal('Stop'),
   last_assistant_message: optionalText,
+  /** The hook cut the text at its end (M3). */
+  last_assistant_message_truncated: z.boolean().optional(),
 })
 
 const NotificationPayload = z.looseObject({
   ...common,
   hook_event_name: z.literal('Notification'),
   message: optionalText,
+  message_truncated: z.boolean().optional(),
   notification_type: z.string().max(256).optional(),
 })
 
@@ -82,7 +86,14 @@ export function parseHookEvent(raw: unknown): HookParseResult {
     case 'Stop':
       return {
         ok: true,
-        event: { ...base, name: 'Stop', lastAssistantMessage: data.last_assistant_message },
+        event: {
+          ...base,
+          name: 'Stop',
+          lastAssistantMessage: uncut(
+            data.last_assistant_message,
+            data.last_assistant_message_truncated,
+          ),
+        },
       }
     case 'Notification':
       return {
@@ -90,7 +101,7 @@ export function parseHookEvent(raw: unknown): HookParseResult {
         event: {
           ...base,
           name: 'Notification',
-          message: data.message,
+          message: uncut(data.message, data.message_truncated),
           notificationType: data.notification_type,
         },
       }
@@ -107,4 +118,9 @@ export function parseHookEvent(raw: unknown): HookParseResult {
         },
       }
   }
+}
+
+/** A text the hook cut loses its partial last line before anything redacts it (M3). */
+function uncut(text: string | undefined, truncated: boolean | undefined): string | undefined {
+  return text === undefined || truncated !== true ? text : dropCutTail(text)
 }

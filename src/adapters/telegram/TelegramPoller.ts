@@ -1,6 +1,7 @@
 import { type Api, Bot, BotError, GrammyError } from 'grammy'
 import type { Update } from 'grammy/types'
 import type { CallbackHandler } from '../../application/callbacks/InboundCallback.ts'
+import type { InboundMessage } from '../../application/pipeline/InboundMessage.ts'
 import type { InboundHandler } from '../../application/pipeline/InboundStep.ts'
 import type { InboundPoller, PollingExit } from '../../application/ports/InboundPoller.ts'
 import type { Logger } from '../../application/ports/Logger.ts'
@@ -22,6 +23,11 @@ export interface TelegramPollerOptions {
   /** Consecutive 409 Conflicts before giving up (another process polls the same bot). */
   readonly maxConflicts?: number
   readonly sleep?: AbortableSleep
+  /**
+   * Messages that get a lane of their own per chat, so they never wait behind
+   * slower work of that chat (`/stop`, M1). Everything else of a chat stays in order.
+   */
+  readonly isUrgent?: (message: InboundMessage) => boolean
 }
 
 /**
@@ -34,6 +40,16 @@ const apiSignal = (signal: AbortSignal) => signal as unknown as ApiSignal
 const DEFAULT_POLL_TIMEOUT_SECONDS = 30
 const DEFAULT_MAX_CONFLICTS = 8
 const MAX_BACKOFF_MS = 15_000
+/** While work is in flight, how often to look for new updates (a `/stop`). */
+const IN_FLIGHT_RECHECK_MS = 500
+/** A quick handler finishes within this; then the next poll confirms it at once. */
+const SETTLE_GRACE_MS = 25
+/** Updates held back from confirmation at most; beyond, they are confirmed while in flight. */
+const MAX_UNCONFIRMED = 50
+/** Handlers in flight at most before polling waits for one to finish (backpressure). */
+const MAX_IN_FLIGHT = 200
+/** How long `stop` waits for handlers in flight. */
+const DRAIN_MS = 1500
 
 /**
  * Long-polls the Bot API with grammY and hands each message to the inbound
@@ -41,6 +57,11 @@ const MAX_BACKOFF_MS = 15_000
  * 401/404 (bad token) stops at once, a persistent 409 Conflict stops after a
  * few backed-off retries, anything else retries with backoff. Errors are
  * logged only as redacted summaries.
+ *
+ * Handlers never block polling (M1): each update joins a lane (per chat;
+ * taps and urgent commands have their own), lanes run concurrently and each
+ * one in order. An update is confirmed to Telegram only once handled, or
+ * when more than `MAX_UNCONFIRMED` are pending; redelivered ones are skipped.
  */
 export class TelegramPoller implements InboundPoller {
   readonly #bot: Bot
@@ -50,7 +71,10 @@ export class TelegramPoller implements InboundPoller {
   #onCallback: CallbackHandler | undefined
   #abort: AbortController | undefined
   #loop: Promise<PollingExit> | undefined
-  #offset = 0
+  /** Every update below this id has been dispatched. */
+  #next = 0
+  readonly #inFlight = new Map<number, Promise<void>>()
+  readonly #lanes = new Map<string, Promise<void>>()
 
   constructor(options: TelegramPollerOptions) {
     this.#options = options
@@ -82,16 +106,29 @@ export class TelegramPoller implements InboundPoller {
     return this.#loop
   }
 
-  /** Stops polling and confirms the processed updates so they are not delivered again. */
+  /**
+   * Stops polling, waits (briefly) for the handlers in flight, and confirms
+   * the handled updates so they are not delivered again.
+   */
   async stop(): Promise<void> {
     const loop = this.#loop
     if (loop === undefined) return
     this.#abort?.abort()
     await loop
-    if (this.#offset > 0) {
+    const drained = Promise.all(this.#inFlight.values()).then(() => true)
+    const timedOut = new Promise<boolean>((resolve) => {
+      setTimeout(() => resolve(false), DRAIN_MS).unref?.()
+    })
+    if (!(await Promise.race([drained, timedOut]))) {
+      this.#options.logger.warn('stopping with inbound handlers still running', {
+        count: this.#inFlight.size,
+      })
+    }
+    const offset = this.#confirmOffset()
+    if (offset > 0) {
       try {
         await this.#bot.api.getUpdates(
-          { offset: this.#offset, limit: 1, timeout: 0 },
+          { offset, limit: 1, timeout: 0 },
           apiSignal(AbortSignal.timeout(5000)),
         )
       } catch {
@@ -114,15 +151,17 @@ export class TelegramPoller implements InboundPoller {
           logger.info('telegram polling started', { bot: this.#bot.botInfo.username })
         }
         const updates = await this.#bot.api.getUpdates(
-          { offset: this.#offset, timeout, allowed_updates: [...ALLOWED_UPDATES] },
+          { offset: this.#confirmOffset(), timeout, allowed_updates: [...ALLOWED_UPDATES] },
           apiSignal(signal),
         )
         failures = 0
         conflicts = 0
-        for (const update of updates) {
-          this.#offset = update.update_id + 1
-          await this.#dispatch(update)
+        const fresh = updates.filter((update) => update.update_id >= this.#next)
+        for (const update of fresh) {
+          this.#next = update.update_id + 1
+          this.#enqueue(update)
         }
+        await this.#pace(fresh.length, signal)
       } catch (error) {
         if (signal.aborted) break
         if (isTokenRejection(error)) {
@@ -150,6 +189,62 @@ export class TelegramPoller implements InboundPoller {
     return 'stopped'
   }
 
+  /** The oldest update still in flight (not confirmed yet), unless too many are pending. */
+  #confirmOffset(): number {
+    let oldest = this.#next
+    for (const id of this.#inFlight.keys()) oldest = Math.min(oldest, id)
+    return this.#next - oldest > MAX_UNCONFIRMED ? this.#next : oldest
+  }
+
+  /** Joins the update's lane; never rejects (`#dispatch` logs failures). */
+  #enqueue(update: Update): void {
+    const lane = this.#laneOf(update)
+    const previous = this.#lanes.get(lane) ?? Promise.resolve()
+    const run = previous.then(() => this.#dispatch(update))
+    this.#lanes.set(lane, run)
+    this.#inFlight.set(update.update_id, run)
+    void run.then(() => {
+      this.#inFlight.delete(update.update_id)
+      if (this.#lanes.get(lane) === run) this.#lanes.delete(lane)
+    })
+  }
+
+  #laneOf(update: Update): string {
+    if (update.message !== undefined) {
+      const chat = String(update.message.chat.id)
+      let urgent = false
+      try {
+        urgent = this.#options.isUrgent?.(toInboundMessage(update.message)) === true
+      } catch {
+        // A classifier bug must not lose the update: it just keeps the chat's order.
+      }
+      return `${urgent ? 'urgent' : 'chat'}:${chat}`
+    }
+    const tap = update.callback_query
+    return `tap:${tap?.message?.chat.id ?? tap?.from.id ?? 'unknown'}`
+  }
+
+  /**
+   * Before the next poll: give quick handlers a moment, so they are confirmed
+   * at once; while some are still running, poll again only every so often (a
+   * poll returns at once while unconfirmed updates exist); never let more
+   * than `MAX_IN_FLIGHT` pile up.
+   */
+  async #pace(dispatched: number, signal: AbortSignal): Promise<void> {
+    if (this.#inFlight.size === 0) return
+    const anySettled = () => Promise.race(this.#inFlight.values())
+    if (dispatched > 0) {
+      await Promise.race([Promise.all(this.#inFlight.values()), delay(SETTLE_GRACE_MS)])
+      if (this.#inFlight.size === 0) return
+    }
+    while (this.#inFlight.size >= MAX_IN_FLIGHT && !signal.aborted) {
+      await Promise.race([anySettled(), this.#sleep(IN_FLIGHT_RECHECK_MS, signal)])
+    }
+    if (dispatched === 0 && this.#confirmOffset() < this.#next) {
+      await Promise.race([anySettled(), this.#sleep(IN_FLIGHT_RECHECK_MS, signal)])
+    }
+  }
+
   async #dispatch(update: Update): Promise<void> {
     try {
       await this.#bot.handleUpdate(update)
@@ -161,6 +256,10 @@ export class TelegramPoller implements InboundPoller {
       })
     }
   }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {

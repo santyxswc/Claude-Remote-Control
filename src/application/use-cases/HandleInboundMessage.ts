@@ -1,3 +1,4 @@
+import { sanitizeDisplayText, sanitizeUsername } from '../../domain/displayText.ts'
 import type { SenderProfile } from '../../domain/Sender.ts'
 import type { Messages } from '../i18n/messages.ts'
 import type { InboundMessage } from '../pipeline/InboundMessage.ts'
@@ -21,12 +22,19 @@ export interface HandleInboundMessageDeps {
   readonly audit: AuditLog
   readonly clock: Clock
   readonly logger: Logger
-  readonly messages: Pick<Messages, 'queued' | 'deliveryFailed'>
+  readonly messages: Pick<Messages, 'queued' | 'deliveryFailed' | 'messageTooLong'>
   /** Observer: the message reached the session (activity and notice debounce listen). */
   readonly onForwarded?: () => void
 }
 
 export type ForwardOutcome = 'forwarded' | 'failed'
+
+/**
+ * Longest text forwarded to the session (L2). Telegram itself stops at 4,096;
+ * this guards the other inbound adapters. Longer texts are refused and the
+ * sender is told, never cut silently.
+ */
+export const MAX_INBOUND_TEXT_LENGTH = 16_384
 
 /**
  * Delivers an authenticated text message to the Claude Code session as a
@@ -40,13 +48,23 @@ export class HandleInboundMessage {
   async execute(message: ForwardableMessage): Promise<ForwardOutcome> {
     const { channel, chat, logger } = this.deps
     const senderId = message.sender.id
+    if (message.text.length > MAX_INBOUND_TEXT_LENGTH) {
+      logger.warn('refused an inbound text over the limit', {
+        senderId,
+        length: message.text.length,
+      })
+      await this.#tell(message.chatId, this.deps.messages.messageTooLong(MAX_INBOUND_TEXT_LENGTH))
+      return 'failed'
+    }
     try {
       await channel.emit({
         content: message.text,
         meta: {
           chat_id: message.chatId,
           message_id: message.messageId,
-          user: message.sender.username ?? message.sender.displayName,
+          user:
+            sanitizeUsername(message.sender.username) ??
+            sanitizeDisplayText(message.sender.displayName),
           ts: new Date(message.sentAt).toISOString(),
         },
       })

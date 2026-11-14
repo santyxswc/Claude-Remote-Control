@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { homedir } from 'node:os'
 /**
  * PreToolUse hook entrypoint (F6): `bun src/brakeHook.ts`, run by Claude Code
  * before every tool call, synchronously, so it can refuse the call.
@@ -14,7 +15,7 @@
  * fails closed. Diagnostics go to stderr only with TELEGRAM_BRIDGE_DEBUG=1.
  */
 import { type BrakeFileState, brakeFilePath, readBrakeFile } from './adapters/storage/brakeFile.ts'
-import { defaultStateDir } from './adapters/storage/stateDir.ts'
+import { resolveStateDirIgnoringInvalid } from './adapters/storage/stateDir.ts'
 
 const DEBUG_ENV = 'TELEGRAM_BRIDGE_DEBUG'
 const debugEnabled = process.env[DEBUG_ENV] === '1'
@@ -31,7 +32,7 @@ function debug(message: string): void {
 const FALLBACK_OUTPUT = `${JSON.stringify({
   continue: false,
   stopReason:
-    'telegram-bridge: the brake is engaged. To release it send /resume in Telegram or run "telegram-bridge resume".',
+    'telegram-bridge: the brake is engaged. To release it send /resume in Telegram or run "bun run bridge -- resume".',
   hookSpecificOutput: {
     hookEventName: 'PreToolUse',
     permissionDecision: 'deny',
@@ -53,7 +54,9 @@ async function render(state: BrakeFileState, flagPath: string): Promise<string> 
 
 let stateDir: string | undefined
 try {
-  stateDir = defaultStateDir()
+  // A relative TELEGRAM_BRIDGE_HOME or CLAUDE_CONFIG_DIR is skipped, not resolved against cwd
+  // and not a reason to stop checking (ADR 0003, "Failure policy").
+  stateDir = resolveStateDirIgnoringInvalid(process.env, homedir())
 } catch (error) {
   debug(`no state directory: ${error instanceof Error ? error.message : String(error)}`)
 }

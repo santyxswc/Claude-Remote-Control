@@ -1,3 +1,5 @@
+import { sanitizeDisplayText } from '../displayText.ts'
+
 /**
  * `Notification` types that mean Claude waits for the owner (hooks reference,
  * matcher table). Others (`auth_success`, `elicitation_complete`,
@@ -33,5 +35,7 @@ export function projectName(cwd: string | undefined): string | undefined {
   const segments = cwd.split(/[\\/]+/).filter((segment) => segment !== '')
   const last = segments.at(-1)
   if (last === undefined || /^[A-Za-z]:$/.test(last)) return undefined
-  return last.slice(0, MAX_PROJECT_NAME_LENGTH)
+  // A directory name can hold controls or bidi characters; it is shown in the chat.
+  const name = sanitizeDisplayText(last, MAX_PROJECT_NAME_LENGTH)
+  return name === '' ? undefined : name
 }

@@ -1,4 +1,4 @@
-import { elideMiddle } from '../../domain/elideMiddle.ts'
+import { senderLabel } from '../../domain/displayText.ts'
 import {
   CONFIRMATION_WINDOW_MS,
   type PermissionRequest,
@@ -8,27 +8,24 @@ import type { Messages } from '../i18n/messages.ts'
 import type { PromptKeyboard } from '../ports/PromptGateway.ts'
 import { encodePermissionCallback } from './callbackData.ts'
 
-/**
- * The whole prompt must fit one message (Telegram: 4096). This leaves room
- * for redaction, which can make text longer (`[REDACTED]` is 10 characters).
- */
-export const PROMPT_TEXT_BUDGET = 3500
-const TOOL_NAME_BUDGET = 100
-const DESCRIPTION_BUDGET = 600
-const MIN_PREVIEW_BUDGET = 200
-
 /** How a decision was reached, when the state alone does not say it (a `/stop`). */
 export type DecisionCause = 'stop'
 
 export interface RenderedPrompt {
+  /** The whole prompt, nothing elided: the redacting gateway fits it after redaction (M3). */
   readonly text: string
+  /** The same prompt with the description and input replaced by "they are above" (M2). */
+  readonly compact: string
+  /** The whole description and input, for the plain message(s) sent before `compact`. */
+  readonly details: string
   readonly keyboard: PromptKeyboard
 }
 
 /**
  * The prompt as it should look in the request's current state: content,
  * a status line once something happened, and the buttons that still apply.
- * Long values keep their start and end (the end of a command matters).
+ * Nothing is cut here: cutting before redaction could leave half a secret
+ * that no detector recognizes (M3), and a cut must never be silent (M2).
  */
 export function renderPermissionPrompt(
   request: PermissionRequest,
@@ -40,16 +37,20 @@ export function renderPermissionPrompt(
   const suffix = status === undefined ? '' : `\n\n${status}`
   const view = {
     requestId: request.id,
-    toolName: elideMiddle(request.toolName, TOOL_NAME_BUDGET),
-    description: elideMiddle(request.description, DESCRIPTION_BUDGET),
-    inputPreview: '',
+    toolName: request.toolName,
+    description: request.description,
+    inputPreview: request.inputPreview,
     risk: request.risk,
   }
-  const fixed = messages.permissionPrompt(view).length + suffix.length
-  const previewBudget = Math.max(MIN_PREVIEW_BUDGET, PROMPT_TEXT_BUDGET - fixed)
-  const inputPreview = elideMiddle(request.inputPreview, previewBudget)
   return {
-    text: messages.permissionPrompt({ ...view, inputPreview }) + suffix,
+    text: messages.permissionPrompt(view) + suffix,
+    compact:
+      messages.permissionPrompt({
+        ...view,
+        description: messages.permissionDetailsAbove,
+        inputPreview: '',
+      }) + suffix,
+    details: messages.permissionDetails(view),
     keyboard: keyboardFor(request, messages),
   }
 }
@@ -76,7 +77,7 @@ function statusLine(
   cause: DecisionCause | undefined,
 ): string | undefined {
   const decision = () => ({
-    who: actor === undefined ? (request.decidedBy ?? '?') : displayName(actor),
+    who: actor === undefined ? (request.decidedBy ?? '?') : senderLabel(actor),
     at: new Date(request.decidedAt ?? 0).toISOString(),
   })
   switch (request.state) {
@@ -95,8 +96,4 @@ function statusLine(
     case 'resolved_locally':
       return messages.permissionResolvedLocally
   }
-}
-
-function displayName(sender: SenderProfile): string {
-  return sender.username === undefined ? sender.displayName : `@${sender.username}`
 }

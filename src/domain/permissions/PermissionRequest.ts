@@ -227,6 +227,16 @@ export class PermissionRequest {
     return this.#apply({ prompts: [...this.#data.prompts, ...prompts] })
   }
 
+  /**
+   * Raises the risk to high, so approving needs the second tap: part of the
+   * input could not be shown (M2). Risk only ever goes up, and only while
+   * nobody has answered; otherwise this same instance is returned.
+   */
+  escalated(): PermissionRequest {
+    if (this.#data.risk === 'high' || this.state !== 'pending') return this
+    return this.#apply({ risk: 'high' })
+  }
+
   #apply(changes: Partial<PermissionSnapshot>): PermissionRequest {
     return new PermissionRequest({ ...this.#data, ...changes, revision: this.#data.revision + 1 })
   }

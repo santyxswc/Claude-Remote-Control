@@ -47,7 +47,7 @@ test('access list shows name, handle, exact id and date', () => {
   expect(runAccessList(s.deps)).toBe(0)
   expect(s.terminal.out).toEqual([
     es.accessListHeader,
-    '  Mallory (@mallory), id 9007199254740993, agregada el 2026-11-13T00:00:00.000Z',
+    '  id 9007199254740993, "Mallory" (@mallory), agregada el 2026-11-13T00:00:00.000Z',
   ])
 })
 

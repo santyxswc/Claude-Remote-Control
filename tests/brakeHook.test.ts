@@ -2,7 +2,7 @@
  * The PreToolUse brake entrypoint, spawned the way Claude Code runs it
  * (`bun src/brakeHook.ts`, the hook JSON on stdin), in every flag state.
  */
-import { afterEach, beforeEach, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { brakeFilePath } from '../src/adapters/storage/brakeFile.ts'
@@ -111,3 +111,47 @@ test('diagnostics only with TELEGRAM_BRIDGE_DEBUG=1, on stderr', async () => {
   expect(result).toMatchObject({ exitCode: 0, stdout: '' })
   expect(result.stderr).toContain('absent')
 })
+
+describe('L3: an invalid state directory variable', () => {
+  test('a relative TELEGRAM_BRIDGE_HOME is ignored: the brake in the fallback directory still stops', async () => {
+    // CLAUDE_CONFIG_DIR stands in for the default location, so ~/.claude is never touched.
+    const fallback = join(stateDir, 'channels', 'telegram-bridge')
+    mkdirSync(fallback, { recursive: true })
+    new FileBrakeFlag(fallback).engage({ engagedAt: 1, actor: 'terminal', reason: undefined })
+    for (const cwd of [stateDir, fallback]) {
+      const result = await runHookIn(cwd, {
+        TELEGRAM_BRIDGE_HOME: 'relative-state',
+        CLAUDE_CONFIG_DIR: stateDir,
+      })
+      expect(result.exitCode).toBe(0)
+      expect(JSON.parse(result.stdout)).toMatchObject({ continue: false })
+    }
+  })
+
+  test('a relative TELEGRAM_BRIDGE_HOME is never read from the working directory', async () => {
+    // A flag where cwd-relative resolution would look, none in the fallback: not braked.
+    mkdirSync(join(stateDir, 'relative-state'))
+    new FileBrakeFlag(join(stateDir, 'relative-state')).engage({
+      engagedAt: 1,
+      actor: 'terminal',
+      reason: undefined,
+    })
+    const result = await runHookIn(stateDir, {
+      TELEGRAM_BRIDGE_HOME: 'relative-state',
+      CLAUDE_CONFIG_DIR: join(stateDir, 'config'),
+    })
+    expect(result).toMatchObject({ exitCode: 0, stdout: '' })
+  })
+})
+
+async function runHookIn(cwd: string, env: Record<string, string>) {
+  const child = Bun.spawn([process.execPath, HOOK], {
+    cwd,
+    env: { ...process.env, TELEGRAM_BRIDGE_DEBUG: '', ...env },
+    stdin: new Blob([preToolUse]),
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  const [exitCode, stdout] = await Promise.all([child.exited, new Response(child.stdout).text()])
+  return { exitCode, stdout }
+}

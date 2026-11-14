@@ -37,12 +37,14 @@ export interface StopSessionDeps {
 }
 
 /**
- * `/stop`, the panic button. In this order: the brake flag (from then on
- * every tool call is refused by the PreToolUse hook and Claude stops), a
- * `deny` for every pending permission request of this session (the F3 path,
- * so each gets one verdict and its prompts lose their buttons), then a
- * best-effort interrupt of the running turn. A second `/stop` changes
- * nothing but still denies anything left pending.
+ * `/stop`, the panic button. First, before anything is awaited, the brake
+ * flag (from then on every tool call is refused by the PreToolUse hook and
+ * Claude stops). Then, all at once (M1: a Telegram flood wait on one prompt
+ * edit must hold up nothing else): a `deny` for every pending permission
+ * request of this session (the F3 path, so each gets one verdict and its
+ * prompts lose their buttons) and a best-effort interrupt of the running
+ * turn. A second `/stop` changes nothing but still denies anything left
+ * pending.
  */
 export class StopSession {
   constructor(private readonly deps: StopSessionDeps) {}
@@ -53,8 +55,10 @@ export class StopSession {
       actor,
       ...(input.reason === undefined ? {} : { reason: input.reason }),
     })
-    const denied = await this.#denyPending(input.sender)
-    const interrupt = engaged.outcome === 'engaged' ? await this.#interrupt() : 'skipped'
+    const [denied, interrupt] = await Promise.all([
+      this.#denyPending(input.sender),
+      engaged.outcome === 'engaged' ? this.#interrupt() : Promise.resolve('skipped' as const),
+    ])
 
     if (engaged.outcome === 'engaged') {
       this.deps.audit.append({
@@ -71,17 +75,12 @@ export class StopSession {
     const pending = this.deps.store
       .listOpen()
       .filter((request) => request.session === this.deps.session)
-    let denied = 0
-    for (const request of pending) {
-      const outcome = await this.deps.resolve.execute({
-        requestId: request.id,
-        action: 'deny',
-        sender,
-        via: 'stop',
-      })
-      if (outcome === 'denied') denied += 1
-    }
-    return denied
+    const outcomes = await Promise.all(
+      pending.map((request) =>
+        this.deps.resolve.execute({ requestId: request.id, action: 'deny', sender, via: 'stop' }),
+      ),
+    )
+    return outcomes.filter((outcome) => outcome === 'denied').length
   }
 
   async #interrupt(): Promise<InterruptResult> {

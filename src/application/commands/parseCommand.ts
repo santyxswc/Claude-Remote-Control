@@ -16,3 +16,12 @@ export function parseCommand(text: string): ParsedCommand | undefined {
   if (match === null) return undefined
   return { name: match[1] ?? '', mention: match[2], args: (match[3] ?? '').trim() }
 }
+
+/** Commands that never wait behind other work of the same chat: the brake (M1). */
+const URGENT_COMMANDS: ReadonlySet<string> = new Set(['stop', 'resume'])
+
+/** True for `/stop` and `/resume` (with or without `@bot`), whatever the arguments. */
+export function isUrgentCommand(text: string | undefined): boolean {
+  const command = text === undefined ? undefined : parseCommand(text)
+  return command !== undefined && URGENT_COMMANDS.has(command.name.toLowerCase())
+}
