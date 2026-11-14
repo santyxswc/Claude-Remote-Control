@@ -4,9 +4,11 @@
  * client standing in for Claude Code.
  */
 import { afterAll, beforeAll, expect, test } from 'bun:test'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { makeTempDir, removeTempDir } from './tempDir.ts'
 
 const repoRoot = join(import.meta.dir, '..')
 
@@ -16,6 +18,7 @@ let stderr = ''
 const transportErrors: Error[] = []
 const notifications: unknown[] = []
 let baseUrl: string
+let stateDir: string
 
 async function waitFor<T>(probe: () => T | undefined, what: string): Promise<T> {
   for (let elapsed = 0; elapsed < 10_000; elapsed += 20) {
@@ -27,11 +30,13 @@ async function waitFor<T>(probe: () => T | undefined, what: string): Promise<T> 
 }
 
 beforeAll(async () => {
+  // Never the real ~/.claude state, and never a real token: the server must not reach Telegram.
+  stateDir = makeTempDir()
   transport = new StdioClientTransport({
     command: process.execPath, // the bun binary running the tests
     args: ['src/main.ts'],
     cwd: repoRoot,
-    env: { TELEGRAM_BRIDGE_DEV_PORT: '0' },
+    env: { TELEGRAM_BRIDGE_DEV_PORT: '0', TELEGRAM_BRIDGE_HOME: stateDir, TELEGRAM_BOT_TOKEN: '' },
     stderr: 'pipe',
   })
   transport.stderr?.on('data', (chunk: Buffer) => {
@@ -53,6 +58,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await client.close()
+  removeTempDir(stateDir)
 })
 
 test('a POST reaches the session and the reply comes back on /events', async () => {
@@ -88,6 +94,18 @@ test('a POST reaches the session and the reply comes back on /events', async () 
 
   expect(transportErrors).toEqual([])
   expect(stderr).toContain('telegram-bridge [info] channel connected')
+})
+
+test('without a token it says how to configure, creates its state and keeps serving MCP', async () => {
+  await waitFor(
+    () => (stderr.includes('telegram is not configured') ? true : undefined),
+    'the hint',
+  )
+  expect(stderr).toContain(
+    'telegram-bridge [warn] telegram is not configured; run `bun run bridge -- init`',
+  )
+  expect(existsSync(join(stateDir, 'bridge.sqlite'))).toBe(true)
+  expect((await client.listTools()).tools.map((t) => t.name)).toEqual(['reply'])
 })
 
 test('the process exits when the client closes stdin', async () => {

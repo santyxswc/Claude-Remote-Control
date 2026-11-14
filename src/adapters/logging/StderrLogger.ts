@@ -33,6 +33,7 @@ export class StderrLogger implements Logger {
   }
 }
 
-function serializeErrors(_key: string, value: unknown): unknown {
+/** JSON replacer that keeps only the name and message of errors. */
+export function serializeErrors(_key: string, value: unknown): unknown {
   return value instanceof Error ? { name: value.name, message: value.message } : value
 }

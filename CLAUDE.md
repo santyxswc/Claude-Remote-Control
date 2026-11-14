@@ -12,13 +12,21 @@ Code session. The approved design is `docs/plan.md` (Spanish); each flow has its
 - `src/application` imports only `src/domain`, `src/application` and `zod`.
 - The application layer defines the ports; adapters implement them. Keep ports small.
 - One use case per file, with a single reason to change.
-- `src/main.ts` is the only composition root and wires everything by hand (no DI container).
+- `src/main.ts` (the channel) and `src/cli.ts` (the `telegram-bridge` CLI) are the only
+  composition roots and wire everything by hand (no DI container).
 - `bun run check:arch` enforces the import rules; do not weaken it to make code pass.
 
 ## Runtime rules
 
-- stdout belongs to the MCP stdio transport. Never `console.log` in `src/`; log through the
-  `Logger` port (stderr).
+- In the channel process stdout belongs to the MCP stdio transport. Never `console.log` in
+  `src/`; log through the `Logger` port (stderr). The CLI talks to the user only through the
+  `Terminal` port.
+- User-facing text (bot replies, CLI output) comes from `src/application/i18n/messages.ts`
+  (Spanish default, English via `TELEGRAM_BRIDGE_LOCALE=en`). Diagnostic logs stay in English.
+- Secrets (the bot token, pairing codes) never appear in logs, errors, audit rows or test
+  snapshots. Log Telegram errors only through `describeTelegramError`; persist only hashes of
+  codes; never accept a secret as a CLI argument. Tests assert this.
+- Only one process polls Telegram, the holder of the poller lock (ADR 0006).
 - Windows is a first-class target: build paths with `node:path`, never hardcode `/` paths, `~`,
   Unix sockets or POSIX-only tools.
 - The channel contract is a research preview. Keep everything contract-specific inside
@@ -34,3 +42,4 @@ Code session. The approved design is `docs/plan.md` (Spanish); each flow has its
   - `bun run check`: lint, typecheck, architecture check and tests (what CI runs)
   - `bun run format`: apply Biome formatting and safe fixes
   - `bun test`: tests only
+  - `bun run bridge -- <command>`: the CLI (`init`, `pair`, `access list`, `access revoke <id>`)
