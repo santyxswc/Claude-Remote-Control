@@ -13,7 +13,8 @@ own PC; there is no server.
 
 - State lives in one SQLite database (`bun:sqlite`, WAL mode) inside the state directory.
 - The state directory is `TELEGRAM_BRIDGE_HOME` when set, otherwise
-  `~/.claude/channels/telegram-bridge` (resolved with `node:path`, so it works on Windows). The
+  `~/.claude/channels/telegram-bridge` (resolved with `node:path`, so it works on Windows; since
+  F1 `~/.claude` is replaced by `CLAUDE_CONFIG_DIR` when that is set, as in the reference plugin). The
   resolver is `src/adapters/storage/stateDir.ts`.
 - The bot token is stored in a separate file in the same directory, outside the repository and
   never logged. On POSIX the directory is `0700` and secret files `0600`; on Windows file modes

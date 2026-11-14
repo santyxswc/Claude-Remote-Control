@@ -5,7 +5,8 @@
       "args": ["./src/main.ts"],
       "env": {
         "TELEGRAM_BRIDGE_DEV_PORT": "${TELEGRAM_BRIDGE_DEV_PORT:-}",
-        "TELEGRAM_BRIDGE_HOME": "${TELEGRAM_BRIDGE_HOME:-}"
+        "TELEGRAM_BRIDGE_HOME": "${TELEGRAM_BRIDGE_HOME:-}",
+        "TELEGRAM_BRIDGE_LOCALE": "${TELEGRAM_BRIDGE_LOCALE:-}"
       }
     }
   }
