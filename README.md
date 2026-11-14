@@ -24,7 +24,7 @@ Channels are a research preview of Claude Code: the flag and the protocol can ch
 
 A demo will be added after live validation.
 
-License: to be decided.
+License: [MIT](LICENSE). The bundled Noto Sans fonts are under the SIL Open Font License 1.1 (`assets/fonts/OFL.txt`).
 
 ## What it does
 
@@ -366,6 +366,7 @@ Layout: `src/domain` (pure rules), `src/application` (ports and use cases), `src
 
 - [docs/architecture.md](docs/architecture.md): layers, ports, processes, patterns, state files
 - [docs/flows/README.md](docs/flows/README.md): flow index and the live-validation checklist
+- [docs/validacion-en-vivo-prompt.md](docs/validacion-en-vivo-prompt.md): a prompt (in Spanish) for running the live validation with Claude Code
 - [docs/threat-model.md](docs/threat-model.md) and [SECURITY.md](SECURITY.md)
 - [docs/adr/](docs/adr/): decisions and findings about the Claude Code contract
 - [docs/roadmap.md](docs/roadmap.md): phases and open decisions

@@ -1,6 +1,7 @@
 {
   "name": "telegram-bridge",
   "version": "0.0.0",
+  "license": "MIT",
   "description": "Telegram channel for Claude Code: messages, permission prompts with buttons and finished/needs-answer notices, with pairing and a sender allowlist.",
   "keywords": ["telegram", "channel", "messaging", "mcp", "hooks"],
   "mcpServers": {
