@@ -42,9 +42,12 @@ behaves differently from the doc, write it down: those are the "needs live verif
 that go into the ADRs.
 
 Progress: started on 2026-11-14 on Arch Linux (niri 26.04, Wayland) with Claude Code 2.1.325
-(claude.ai Pro) and Bun 1.4.4. Parts 0 and 1 are done; Part 2 is done up to pairing with no
-session running. **Resume at Part 2, "Pair again with the session running".** Checked items carry
-the date; the versions are these unless an item says otherwise. The throwaway state directory was
+(claude.ai Pro) and Bun 1.4.4. Parts 0 and 1 are done; Part 2 is done except for
+the last two items. **Resume at Part 2, "Let a pairing expire ... five wrong codes", then
+"`access revoke`".** Part 3 has had a first look (a text from the phone reached the session and
+the reply came back threaded; `/start` and `/status` answer at once) but is not checked off.
+Two changes came out of the second day: `TELEGRAM_BRIDGE_LOG_FILE` and the drop of messages
+sent before the session. Checked items carry the date; the versions are these unless an item says otherwise. The throwaway state directory was
 `/tmp/tb-live`, which a reboot clears: if it is gone, repeat `init` and `pair` first.
 
 Reading the channel's log: Claude Code keeps a server's stderr only until the connection is up,
@@ -82,9 +85,11 @@ Source: [F0](F0.md), manual verification. This proves Claude Code accepts the se
   checkout with `TELEGRAM_BRIDGE_DEV_PORT=8788`. Expect the development-channels warning, the "New
   MCP server found" prompt, the `Channels (experimental)` notice and `/mcp` showing the server
   connected. **Verified 2026-11-14.** `/mcp` lists the server under "Project MCPs" as connected with 1 tool, and the
-  debug log says `Channel notifications registered` (protocol `2025-11-25`, SDK 1.x). Still to
-  note: the owner did not report the warning or the "New MCP server found" prompt; the start
-  screen only shows "1 more notice hidden", which is absent without the channel flag.
+  debug log says `Channel notifications registered` (protocol `2025-11-25`, SDK 1.x). The
+  full-screen "WARNING: Loading development channels" dialog appears on every start, with "I am
+  using this for local development" and "Exit" (seen 2026-11-15). The "New MCP server found"
+  prompt was not seen (the project server may have been approved earlier); the start screen
+  shows "1 more notice hidden" with the channel flag and nothing without it.
 - [ ] **[All]** The dev listener's `Authorization` header is in `<stateDir>/dev-token` (Claude
   Code redacts bearer tokens in its debug log, so it is not printed). Then
   `curl -N -H "@<stateDir>/dev-token" http://127.0.0.1:8788/events` in a second terminal and
@@ -131,19 +136,26 @@ Source: [F1](F1.md), manual verification.
   confirm. `bun run bridge -- access list` shows the account. **Verified 2026-11-14.** Audit: `pairing.started`,
   `pairing.claimed`, `pairing.confirmed`, `sender.allowed`, with ids only; `pairings` keeps
   `code_hash`, never the code.
-- [ ] **[All]** Pair again with the session running (start it as in Part 1 but without the dev port; stderr
-  or `claude --debug` shows `telegram polling started`). `pair` says the session is receiving the
+- [x] **[All]** Pair again with the session running (start it as in Part 1 but without the dev port; the
+  channel's log, see "Reading the channel's log", shows `telegram polling started`). `pair` says the session is receiving the
   messages and the claim arrives through the channel. Decline once with `n`: nobody is added.
-  Then pair for real.
-- [ ] **[All]** From the second account send plain text, `/start` and `/start wrongcode`: no reply at
-  all and nothing in the session. stderr shows `dropped message from an unauthorized sender` with that
-  id and no text. (This is F1's acceptance check.)
+  Then pair for real. **Verified 2026-11-15.** `pair` prints that the Claude Code session is receiving the bot's
+  messages; the phone gets "code received"; declining prints that nobody got access, audits
+  `pairing.declined` and leaves `access list` unchanged. The CLI exits 1 on a decline, so
+  `bun run` adds `error: script "bridge" exited with code 1`. The earlier pairing was kept.
+  A `/start` with an expired code gets no reply, as designed.
+- [x] **[All]** From the second account send plain text, `/start` and `/start wrongcode`: no reply at
+  all and nothing in the session. The log shows `dropped message from an unauthorized sender` with that
+  id and no text. (This is F1's acceptance check.) **Verified 2026-11-15.** Four messages gave one drop line (the
+  per-sender throttle) and `pairing claim handled` with outcome `ignored`; no audit rows and no
+  channel events.
 - [ ] **[All]** Let a pairing expire (2 minutes), then send five wrong codes: cancelled.
 - [ ] **[All]** `access revoke <id>` then check the account is ignored; pair again afterwards.
-- [ ] **[All]** The token appears nowhere in stderr or terminal output; the audit query shows no codes
-  or tokens.
-- [ ] **[All]** With an empty state directory the server stays connected in `/mcp` and logs that
-  Telegram is not configured once.
+- [x] **[All]** The token appears nowhere in stderr or terminal output; the audit query shows no codes
+  or tokens. **Verified 2026-11-15.** Searched the channel's log file, every `~/.claude/debug/*.txt`, the
+  `mcp-logs-telegram-bridge` files and a dump of `bridge.sqlite`: no token, no pairing code.
+- [x] **[All]** With an empty state directory the server stays connected in `/mcp` and logs that
+  Telegram is not configured once. **Verified 2026-11-14** (the sessions before `init`).
 
 ### Part 3: Two-way messaging (F2)
 
@@ -166,9 +178,10 @@ Source: [F2](F2.md), manual verification.
   Claude to reply with its value: the chat shows `[REDACTED]`. Also a fake `ghp_` token.
 - [ ] **[All]** Ask Claude to send to `chat_id 12345`: refused, `reply.refused` in the audit.
 - [ ] **[All]** Revoke yourself, let Claude reply: refused. Pair again.
-- [ ] **[All]** Exit the session, send two messages, wait two minutes and start it again: one
+- [x] **[All]** Exit the session, send two messages, wait two minutes and start it again: one
   "I ignored what you sent before this session started" notice, nothing in the session, two
-  `message.stale_dropped` rows.
+  `message.stale_dropped` rows. **Verified 2026-11-15.** Ages 186 s and 183 s. A typed `/start` afterwards answers
+  "bridge connected".
 - [ ] **[All]** Paste 25 messages quickly: one "slow down" after 20.
 - [ ] **[All]** The second account gets no reply to text, `/help` or `/status`.
 - [ ] **[All]** Audit query: `message.forwarded`, `reply.sent`, `reply.refused`, `message.rate_limited`,
