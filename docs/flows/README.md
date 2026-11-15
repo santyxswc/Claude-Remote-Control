@@ -166,6 +166,9 @@ Source: [F2](F2.md), manual verification.
   Claude to reply with its value: the chat shows `[REDACTED]`. Also a fake `ghp_` token.
 - [ ] **[All]** Ask Claude to send to `chat_id 12345`: refused, `reply.refused` in the audit.
 - [ ] **[All]** Revoke yourself, let Claude reply: refused. Pair again.
+- [ ] **[All]** Exit the session, send two messages, wait two minutes and start it again: one
+  "I ignored what you sent before this session started" notice, nothing in the session, two
+  `message.stale_dropped` rows.
 - [ ] **[All]** Paste 25 messages quickly: one "slow down" after 20.
 - [ ] **[All]** The second account gets no reply to text, `/help` or `/status`.
 - [ ] **[All]** Audit query: `message.forwarded`, `reply.sent`, `reply.refused`, `message.rate_limited`,

@@ -94,6 +94,7 @@ beforeEach(() => {
   stateDir = makeTempDir()
   clock = new FakeClock(Date.now())
   api = new FakeTelegramApi()
+  api.messageDate = Math.floor(clock.now() / 1000)
   timers = new ManualEvery()
   memory = new MemoryLogger()
   notifications = []
@@ -296,7 +297,7 @@ test('size: the declared size is checked first, the real one while streaming', a
 test('voice, video and stickers still get the "only text" refusal', async () => {
   await start()
   const base = {
-    date: 1_700_000_000,
+    date: api.messageDate,
     chat: { id: PHONE_OWNER.id, type: 'private', first_name: 'Owner' },
     from: { is_bot: false, ...PHONE_OWNER },
   }

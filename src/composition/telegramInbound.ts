@@ -300,6 +300,7 @@ export function startTelegramInbound(deps: TelegramInboundDeps): TelegramInbound
       messages,
       logger,
       clock,
+      sessionStartedAt: clock.now(),
       audit: state.audit,
       commands,
       forward,

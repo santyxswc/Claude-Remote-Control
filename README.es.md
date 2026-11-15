@@ -327,6 +327,9 @@ Modelo completo y límites conocidos: [docs/threat-model.md](docs/threat-model.m
 - **"No configurado".** El canal registra que Telegram no está configurado, y la CLI pide ejecutar
   `init` primero. Ejecuta `bun run bridge -- init` y luego `pair`, con el mismo `TELEGRAM_BRIDGE_HOME`
   que el canal.
+- **"Ignoré lo que enviaste antes de que empezara esta sesión".** Los mensajes enviados cuando no
+  había sesión (más de un minuto antes de que arrancara) se descartan a propósito, para que una
+  instrucción vieja no se ejecute después. Vuelve a enviarla.
 - **Los mensajes no llegan a Claude.** Claude Code descarta en silencio los eventos de un canal si el
   servidor no está nombrado en el flag. Revisa el flag y `/mcp`. Comprueba también que tu cuenta esté
   emparejada (`access list`).

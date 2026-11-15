@@ -10,6 +10,14 @@ export const RATE_LIMIT_BURST = 20
 export const RATE_LIMIT_REFILL_MS = 3_000
 export const RATE_LIMIT_NOTICE_WINDOW_MS = 60_000
 
+/**
+ * A message sent more than this long before the session started to receive
+ * messages is left over from an earlier session and is dropped. The margin
+ * covers a restart in progress and a PC clock that runs ahead of the chat
+ * platform's.
+ */
+export const STALE_MESSAGE_GRACE_MS = 60_000
+
 /** At most one "dropped message" log line per sender (or chat) per window. */
 export const DROPPED_LOG_WINDOW_MS = 60_000
 

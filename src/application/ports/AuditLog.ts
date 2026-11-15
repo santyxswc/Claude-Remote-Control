@@ -12,6 +12,7 @@ export type AuditEvent =
   | 'sender.revoked'
   | 'message.forwarded'
   | 'message.rate_limited'
+  | 'message.stale_dropped'
   | 'reply.sent'
   | 'reply.refused'
   | 'reply.failed'
