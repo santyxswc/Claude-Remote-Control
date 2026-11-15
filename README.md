@@ -312,6 +312,9 @@ Full model and known limits: [docs/threat-model.md](docs/threat-model.md) and [S
 - **"Not configured".** The channel logs that Telegram is not configured, and the CLI says to run
   `init` first. Run `bun run bridge -- init`, then `pair`, with the same `TELEGRAM_BRIDGE_HOME` as the
   channel.
+- **"I ignored what you sent before this session started".** Messages sent while no session was
+  running (more than a minute before it started) are dropped on purpose, so that an old
+  instruction is not carried out later. Send it again.
 - **Messages do not reach Claude.** Claude Code drops channel events silently unless the server is
   named in the channel flag. Check the flag and `/mcp`. Also check that your account is paired
   (`access list`).

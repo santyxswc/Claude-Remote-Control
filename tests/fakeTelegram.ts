@@ -102,6 +102,12 @@ export class FakeTelegramApi {
   readonly #scripted = new Map<string, Reply[]>()
   #wake: (() => void) | undefined
   #nextUpdateId = 1
+  /**
+   * The `date` (epoch seconds) given to the messages queued by `sendText` and
+   * the media helpers. A test whose clock is not the default `FakeClock` sets
+   * it to that clock's time: the channel drops messages from before its start.
+   */
+  messageDate = 1_700_000_000
   #nextMessageId = 1000
   #nextCallbackId = 1
 
@@ -192,7 +198,7 @@ export class FakeTelegramApi {
     return this.push({
       message: {
         message_id: this.#nextUpdateId,
-        date: 1_700_000_000,
+        date: this.messageDate,
         chat: { id: from.id, type: 'private', first_name: from.first_name },
         from: { is_bot: false, ...from },
         ...(options.caption === undefined ? {} : { caption: options.caption }),
@@ -207,7 +213,7 @@ export class FakeTelegramApi {
     return this.push({
       message: {
         message_id: this.#nextUpdateId,
-        date: 1_700_000_000,
+        date: this.messageDate,
         chat: { id: from.id, type: 'private', first_name: from.first_name },
         from: { is_bot: false, ...from },
         text,

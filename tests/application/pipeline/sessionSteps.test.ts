@@ -8,6 +8,7 @@ import { ForwardToSessionStep } from '../../../src/application/pipeline/ForwardT
 import type { InboundMessage } from '../../../src/application/pipeline/InboundMessage.ts'
 import { buildPipeline } from '../../../src/application/pipeline/InboundStep.ts'
 import { RateLimitStep } from '../../../src/application/pipeline/RateLimitStep.ts'
+import { StaleMessageStep } from '../../../src/application/pipeline/StaleMessageStep.ts'
 import { UnsupportedContentStep } from '../../../src/application/pipeline/UnsupportedContentStep.ts'
 import { HandleInboundMessage } from '../../../src/application/use-cases/HandleInboundMessage.ts'
 import {
@@ -309,5 +310,120 @@ describe('createSessionSteps with the brake', () => {
       'BrakeGateStep',
       'ForwardToSessionStep',
     ])
+  })
+})
+
+describe('StaleMessageStep', () => {
+  const STARTED_AT = 1_700_000_600_000
+  const GRACE_MS = 60_000
+
+  function setup() {
+    const chat = new FakeChatGateway()
+    const audit = new InMemoryAuditLog()
+    const clock = new FakeClock(STARTED_AT + 5_000)
+    const logger = new MemoryLogger()
+    const step = new StaleMessageStep({
+      sessionStartedAt: STARTED_AT,
+      graceMs: GRACE_MS,
+      clock,
+      chat,
+      audit,
+      logger,
+      notice: en.staleMessagesIgnored,
+    })
+    return { chat, audit, clock, logger, step }
+  }
+
+  test('a message sent after the session started passes', async () => {
+    const { step, chat, audit } = setup()
+    const next = nextSpy()
+    await step.handle(message({ sentAt: STARTED_AT + 1_000 }), next)
+    expect(next).toHaveBeenCalledTimes(1)
+    expect(chat.sent).toEqual([])
+    expect(audit.entries).toEqual([])
+  })
+
+  test('the margin lets through a message sent just before the start', async () => {
+    const { step } = setup()
+    const next = nextSpy()
+    await step.handle(message({ sentAt: STARTED_AT - GRACE_MS }), next)
+    expect(next).toHaveBeenCalledTimes(1)
+  })
+
+  test('older messages are dropped, audited by age and never by text, with one notice', async () => {
+    const { step, chat, audit, clock, logger } = setup()
+    const next = nextSpy()
+    await step.handle(
+      message({ messageId: '7', text: 'deploy to production', sentAt: STARTED_AT - GRACE_MS - 1 }),
+      next,
+    )
+    await step.handle(
+      message({ messageId: '8', text: '/resume', sentAt: STARTED_AT - 3_600_000 }),
+      next,
+    )
+
+    expect(next).not.toHaveBeenCalled()
+    expect(chat.sent).toEqual([{ chatId: ALICE.id, text: en.staleMessagesIgnored }])
+    expect(audit.entries).toEqual([
+      {
+        at: clock.now(),
+        actor: `telegram:${ALICE.id}`,
+        event: 'message.stale_dropped',
+        details: { senderId: ALICE.id, messageId: '7', ageSeconds: 60 },
+      },
+      {
+        at: clock.now(),
+        actor: `telegram:${ALICE.id}`,
+        event: 'message.stale_dropped',
+        details: { senderId: ALICE.id, messageId: '8', ageSeconds: 3600 },
+      },
+    ])
+    expect(JSON.stringify(audit.entries)).not.toContain('deploy')
+    expect(logger.text).not.toContain('deploy')
+    expect(logger.text).not.toContain('/resume')
+  })
+
+  test('a notice that cannot be sent does not stop later messages', async () => {
+    const { step, chat } = setup()
+    chat.failWith = new Error('telegram down')
+    const next = nextSpy()
+    await step.handle(message({ sentAt: STARTED_AT - 3_600_000 }), next)
+    chat.failWith = undefined
+    await step.handle(message({ sentAt: STARTED_AT + 1 }), next)
+    expect(next).toHaveBeenCalledTimes(1)
+  })
+
+  test('createSessionSteps: a stale command or message never reaches the rest of the chain', async () => {
+    const chat = new FakeChatGateway()
+    const channel = new FakeChannel()
+    const audit = new InMemoryAuditLog()
+    const clock = new FakeClock(STARTED_AT)
+    const logger = new MemoryLogger()
+    const steps = createSessionSteps({
+      chat,
+      messages: en,
+      logger,
+      clock,
+      audit,
+      commands: new CommandRegistry(),
+      forward: new HandleInboundMessage({
+        channel,
+        chat,
+        activity: new FakeSessionActivity(),
+        audit,
+        clock,
+        logger,
+        messages: en,
+      }),
+      botUsername: 'demo_bot',
+      sessionStartedAt: STARTED_AT,
+    })
+    const handle = buildPipeline(steps)
+
+    await handle(message({ text: 'old instruction', sentAt: STARTED_AT - 86_000_000 }))
+    await handle(message({ text: 'new instruction', sentAt: STARTED_AT + 2_000 }))
+
+    expect(channel.events.map((event) => event.content)).toEqual(['new instruction'])
+    expect(chat.sent.map((sent) => sent.text)).toEqual([en.staleMessagesIgnored])
   })
 })

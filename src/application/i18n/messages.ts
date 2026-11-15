@@ -320,6 +320,8 @@ export interface Messages {
   readonly commandStopDescription: string
   readonly commandResumeDescription: string
   readonly slowDown: string
+  /** Sent once when messages from before this session were dropped. */
+  readonly staleMessagesIgnored: string
   readonly onlyTextSupported: string
   readonly queued: string
   readonly deliveryFailed: string
@@ -1067,6 +1069,8 @@ const es: Messages = {
   commandStopDescription: 'botón de pánico: frena a Claude y deniega los permisos pendientes',
   commandResumeDescription: 'retira el freno de /stop',
   slowDown: 'Vas muy rápido: los mensajes de más se descartaron. Espera unos segundos.',
+  staleMessagesIgnored:
+    'Ignoré lo que enviaste antes de que empezara esta sesión de Claude Code. Vuelve a enviar lo que aún necesites.',
   onlyTextSupported:
     'Por ahora solo se admiten texto, fotos y archivos. Ese mensaje no se envió a Claude.',
   queued: 'Claude está ocupado: tu mensaje quedó en cola y lo verá al terminar.',
@@ -1460,6 +1464,8 @@ const en: Messages = {
   commandStopDescription: 'panic button: brakes Claude and denies pending permissions',
   commandResumeDescription: 'releases the /stop brake',
   slowDown: 'You are going too fast: the extra messages were dropped. Wait a few seconds.',
+  staleMessagesIgnored:
+    'I ignored what you sent before this Claude Code session started. Send again whatever you still need.',
   onlyTextSupported:
     'Only text, photos and files are supported for now. That message was not sent to Claude.',
   queued: 'Claude is busy: your message is queued and Claude will see it when done.',

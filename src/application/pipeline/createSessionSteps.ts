@@ -1,3 +1,4 @@
+import { STALE_MESSAGE_GRACE_MS } from '../../domain/inboundLimits.ts'
 import { TokenBucket } from '../../domain/TokenBucket.ts'
 import type { CommandRegistry } from '../commands/CommandRegistry.ts'
 import type { Messages } from '../i18n/messages.ts'
@@ -18,6 +19,7 @@ import { ForwardToSessionStep } from './ForwardToSessionStep.ts'
 import type { InboundStep } from './InboundStep.ts'
 import type { PermissionVerdictStep } from './PermissionVerdictStep.ts'
 import { RateLimitStep } from './RateLimitStep.ts'
+import { StaleMessageStep } from './StaleMessageStep.ts'
 import { UnsupportedContentStep } from './UnsupportedContentStep.ts'
 import { VoiceNoteStep } from './VoiceNoteStep.ts'
 
@@ -42,16 +44,34 @@ export interface SessionStepsDeps {
   readonly attachments?: Pick<ReceiveAttachment, 'start'>
   /** Voice notes (F13); without it they get the "only text" notice. */
   readonly voice?: Pick<ReceiveVoiceNote, 'start'>
+  /**
+   * When this process started to receive messages (epoch milliseconds).
+   * Messages sent well before it are dropped; without it nothing is.
+   */
+  readonly sessionStartedAt?: number
 }
 
 /**
  * The tail of the chain for the channel process, after authentication:
- * rate limit, supported content only, permission verdicts, commands, the
+ * messages left over from before the session are dropped, then rate limit, supported content only, permission verdicts, commands, the
  * brake gate, then incoming files, voice notes, typed choice answers and
  * delivery to the session.
  */
 export function createSessionSteps(deps: SessionStepsDeps): InboundStep[] {
   return [
+    ...(deps.sessionStartedAt === undefined
+      ? []
+      : [
+          new StaleMessageStep({
+            sessionStartedAt: deps.sessionStartedAt,
+            graceMs: STALE_MESSAGE_GRACE_MS,
+            clock: deps.clock,
+            chat: deps.chat,
+            audit: deps.audit,
+            logger: deps.logger,
+            notice: deps.messages.staleMessagesIgnored,
+          }),
+        ]),
     new RateLimitStep({
       limiter: deps.limiter ?? new TokenBucket(),
       clock: deps.clock,

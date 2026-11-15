@@ -100,6 +100,7 @@ beforeEach(() => {
   projectDir = makeTempDir()
   clock = new FakeClock(Date.UTC(2026, 10, 14, 10, 30, 5))
   api = new FakeTelegramApi()
+  api.messageDate = Math.floor(clock.now() / 1000)
   timers = new ManualEvery()
   memory = new MemoryLogger()
   notifications = []
