@@ -250,7 +250,7 @@ All settings are optional environment variables.
 | `TELEGRAM_BRIDGE_FFMPEG` | `ffmpeg` on `PATH` | Absolute path of `ffmpeg`, which converts the note (Opus) for whisper. |
 | `CLAUDE_PROJECT_DIR` | set by Claude Code | The project whose `.claude/skills` `/skills` lists. When it is unset or relative, the working directory is used if it has `.claude/` or `.git`; otherwise only personal skills are listed. `/diff` and the pinned status use it too (else the working directory). |
 | `TELEGRAM_BRIDGE_DEBUG` | unset | `1` prints diagnostics on stderr from the hook scripts. |
-| `TELEGRAM_BRIDGE_DEV_PORT` | unset | Development only, without a bot: a local HTTP listener (F0) that needs the bearer token it prints once to stderr, refuses browser requests (`Origin`, foreign `Host`), and does not start when a bot token is configured. Leave it unset. |
+| `TELEGRAM_BRIDGE_DEV_PORT` | unset | Development only, without a bot: a local HTTP listener (F0) that needs the bearer token it keeps in `<stateDir>/dev-token`, refuses browser requests (`Origin`, foreign `Host`), and does not start when a bot token is configured. Leave it unset. |
 
 The hooks, the CLI and the channel must resolve the same state directory, so set these variables
 the same way for all of them (they inherit Claude Code's environment).

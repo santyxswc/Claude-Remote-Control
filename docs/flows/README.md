@@ -68,11 +68,10 @@ Source: [F0](F0.md), manual verification. This proves Claude Code accepts the se
   checkout with `TELEGRAM_BRIDGE_DEV_PORT=8788`. Expect the development-channels warning, the "New
   MCP server found" prompt, the `Channels (experimental)` notice and `/mcp` showing the server
   connected.
-- [ ] **[All]** Find the dev listener's token: it is printed once to the server's stderr with
-  ready-to-paste `curl` lines (start Claude Code with `--debug` and look in
-  `~/.claude/debug/<session-id>.txt`; confirm and note where it actually appears). Then
-  `curl -N -H "Authorization: Bearer <token>" http://127.0.0.1:8788/events` in a second terminal and
-  `curl -X POST -H "Authorization: Bearer <token>" http://127.0.0.1:8788/ --data "What is in this directory? Reply through the channel."`
+- [ ] **[All]** The dev listener's `Authorization` header is in `<stateDir>/dev-token` (Claude
+  Code redacts bearer tokens in its debug log, so it is not printed). Then
+  `curl -N -H "@<stateDir>/dev-token" http://127.0.0.1:8788/events` in a second terminal and
+  `curl -X POST -H "@<stateDir>/dev-token" http://127.0.0.1:8788/ --data "What is in this directory? Reply through the channel."`
   in a third (use `curl.exe` in Windows PowerShell). Claude receives it, calls `reply`, and the reply
   shows up in the first curl.
 - [ ] **[All]** The same POST without the token answers `401`; with `-H "Origin: https://example.com"`

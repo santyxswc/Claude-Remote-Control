@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { connect } from 'node:net'
+import { join } from 'node:path'
 import { DevChatGateway } from '../../../src/adapters/dev/DevChatGateway.ts'
 import {
   DEV_CHAT_ID,
@@ -8,6 +10,7 @@ import {
 } from '../../../src/adapters/dev/DevHttpInbound.ts'
 import type { ChannelEvent, ChannelPort } from '../../../src/application/ports/ChannelPort.ts'
 import { MemoryLogger } from '../../fakes.ts'
+import { makeTempDir, removeTempDir } from '../../tempDir.ts'
 
 class RecordingChannel implements ChannelPort {
   readonly events: ChannelEvent[] = []
@@ -92,6 +95,103 @@ describe('startup', () => {
     expect(text).toContain(`curl -X POST -H "Authorization: Bearer ${inbound.token}"`)
     expect(text).toContain(`${baseUrl}/`)
     expect(text).toContain(`curl -N -H "Authorization: Bearer ${inbound.token}" ${baseUrl}/events`)
+  })
+
+  describe('with a token file', () => {
+    let dir: string
+    let file: string
+    let lines: string[]
+    let withFile: DevHttpInbound | undefined
+    let fileLogger: MemoryLogger
+
+    const start = (tokenFile: string) => {
+      withFile = startDevHttpInbound({
+        port: 0,
+        channel,
+        replies,
+        logger: fileLogger,
+        announce: (line) => lines.push(line),
+        tokenFile,
+      })
+      return withFile
+    }
+
+    beforeEach(() => {
+      dir = makeTempDir()
+      file = join(dir, 'dev-token')
+      lines = []
+      fileLogger = new MemoryLogger()
+      withFile = undefined
+    })
+
+    afterEach(async () => {
+      await withFile?.stop()
+      removeTempDir(dir)
+    })
+
+    // Claude Code 2.1.325 replaces `Bearer` and the next word with `[REDACTED]` in its debug
+    // log, so neither a printed token nor a line that spells the header survives there.
+    test('the curl lines pass the header file and never show the token or "Bearer"', async () => {
+      const started = start(file)
+      expect(readFileSync(file, 'utf8')).toBe(`Authorization: Bearer ${started.token}\n`)
+      const text = lines.join('')
+      expect(text).not.toContain(started.token)
+      expect(text).not.toMatch(/bearer/i)
+      const url = `http://127.0.0.1:${started.port}`
+      expect(text).toContain(`curl -X POST -H "@${file}" --data "hello" ${url}/`)
+      expect(text).toContain(`curl -N -H "@${file}" ${url}/events`)
+      expect(fileLogger.text).not.toContain(started.token)
+    })
+
+    test('the real curl is let in with the header file', async () => {
+      const curl = Bun.which('curl')
+      if (curl === null) return
+      const started = start(file)
+      const run = Bun.spawn(
+        [
+          curl,
+          '-s',
+          '-X',
+          'POST',
+          '-H',
+          `@${file}`,
+          '--data',
+          'hi',
+          `http://127.0.0.1:${started.port}/`,
+        ],
+        { stdout: 'pipe', stderr: 'ignore' },
+      )
+      expect(await new Response(run.stdout).text()).toBe('ok\n')
+      expect(channel.events.map((event) => event.content)).toEqual(['hi'])
+    })
+
+    test.skipIf(process.platform === 'win32')('the file is 0600', () => {
+      start(file)
+      expect(statSync(file).mode & 0o777).toBe(0o600)
+    })
+
+    test('stop() removes the file', async () => {
+      const started = start(file)
+      await started.stop()
+      expect(existsSync(file)).toBe(false)
+    })
+
+    test('a file that cannot be written falls back to printing the token', () => {
+      const started = start(join(dir, 'missing', 'dev-token'))
+      expect(lines.join('')).toContain(`Authorization: Bearer ${started.token}"`)
+      expect(fileLogger.entries.map((entry) => entry.level)).toContain('warn')
+      expect(fileLogger.text).not.toContain(started.token)
+    })
+
+    test.each(['a"b', 'a$b', 'a`b'])(
+      'a path that cannot sit in double quotes (%s) is not used',
+      (name) => {
+        const awkward = join(dir, name)
+        const started = start(awkward)
+        expect(existsSync(awkward)).toBe(false)
+        expect(lines.join('')).toContain(`Authorization: Bearer ${started.token}"`)
+      },
+    )
   })
 
   test('throws when the port is already taken', () => {
