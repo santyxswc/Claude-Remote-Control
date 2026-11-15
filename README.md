@@ -88,7 +88,7 @@ The MVP is one bot for one Claude Code session.
   recommended, because the brake hook uses the `onFailure` key ([ADR 0003](docs/adr/0003-stop-via-hook.md));
   permission relay needs 2.1.234 or later. The exact minimum version for channels is **to be
   confirmed in live validation**.
-- [Bun](https://bun.sh) (the channel, the hooks and the CLI are Bun scripts).
+- [Bun](https://bun.sh) (the channel, the hooks and the CLI are Bun scripts). CI uses 1.4.4. Arch Linux: `sudo pacman -S bun`.
 - A Telegram account with two-step verification enabled (Settings, Privacy and Security,
   Two-Step Verification). Whoever takes over your account can approve tool use on your PC.
 - An interactive Claude Code session. The development-channel flag is ignored with `-p`.

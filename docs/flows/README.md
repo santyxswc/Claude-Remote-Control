@@ -6,13 +6,13 @@ design behind them is `docs/plan.md`; the architecture as built is `docs/archite
 ## Index
 
 Every flow is implemented and merged. "Automated" means tests with fakes (fake Telegram Bot API,
-an MCP client standing in for Claude Code, fake clock). None has been run against live Telegram
-or a live Claude Code session yet; the checklist below is how that happens.
+an MCP client standing in for Claude Code, fake clock). Live validation against Telegram and a
+real Claude Code session started on 2026-11-14 and is in progress; the checklist below tracks it.
 
 | Flow | Title | Status |
 | --- | --- | --- |
-| [F0](F0.md) | Skeleton and technical proof | Implemented. Automated: real `main.ts` over stdio with an MCP client. Live: the `curl` round trip in a real session is pending. Findings: [ADR 0005](../adr/0005-f0-findings.md) |
-| [F1](F1.md) | Installation and pairing | Implemented. Automated acceptance (`tests/acceptance/F1.test.ts`). Live: `init`, `pair`, stranger test pending |
+| [F0](F0.md) | Skeleton and technical proof | Implemented. Automated: real `main.ts` over stdio with an MCP client. Live: the `curl` round trip passed in a real session on 2026-11-14 (Claude Code 2.1.325, Arch Linux). Findings: [ADR 0005](../adr/0005-f0-findings.md) |
+| [F1](F1.md) | Installation and pairing | Implemented. Automated acceptance (`tests/acceptance/F1.test.ts`). Live: `init` and `pair` without a session passed on 2026-11-14; pairing with the session running and the stranger test pending |
 | [F2](F2.md) | Two-way messaging | Implemented. Automated acceptance. Live: phone to session and back pending |
 | [F3](F3.md) | Permission relay with buttons | Implemented. Automated acceptance. Live: terminal dialog closing and the exact preview text pending |
 | [F4](F4.md) | Notices via hooks | Implemented. Automated acceptance, including the real `hook.ts` as a child process. Live: hook firing, `UserPromptSubmit` for chat turns, Windows async hooks pending |
@@ -41,66 +41,92 @@ macOS) inside tmux. Each item points to the flow doc that explains it in detail.
 behaves differently from the doc, write it down: those are the "needs live verification" items
 that go into the ADRs.
 
+Progress: started on 2026-11-14 on Arch Linux (niri 26.04, Wayland) with Claude Code 2.1.325
+(claude.ai Pro) and Bun 1.4.4. Parts 0 and 1 are done; Part 2 is done up to pairing with no
+session running. **Resume at Part 2, "Pair again with the session running".** Checked items carry
+the date; the versions are these unless an item says otherwise. The throwaway state directory was
+`/tmp/tb-live`, which a reboot clears: if it is gone, repeat `init` and `pair` first.
+
 Conventions: `<stateDir>` is the throwaway directory below; "the session" is Claude Code started
 with the channel; the audit query is the one at the end of F1's manual verification.
 
 ### Part 0: Prerequisites
 
-- [ ] **[All]** Bun installed (`bun --version`), Claude Code signed in with claude.ai or a Console
+- [x] **[All]** Bun installed (`bun --version`), Claude Code signed in with claude.ai or a Console
   key, and `claude --version` noted (2.1.295 or later recommended). Team or Enterprise: channels
-  enabled by an admin.
-- [ ] **[All]** Two-step verification enabled on your Telegram account.
-- [ ] **[All]** A bot created with BotFather and its token at hand (do not paste it anywhere except
-  the `init` prompt).
-- [ ] **[All]** A second Telegram account (or a friend's) for the stranger tests.
-- [ ] **[All]** In the checkout: `bun install` and `bun run check` pass.
-- [ ] **[All]** Use a throwaway state directory so nothing touches the real one
+  enabled by an admin. **Verified 2026-11-14.** Bun 1.4.4 from Arch's `extra` repository (`sudo pacman -S bun`), Claude
+  Code 2.1.325; `claude auth status` reports `authMethod: claude.ai`.
+- [x] **[All]** Two-step verification enabled on your Telegram account. **Verified 2026-11-14.**
+- [x] **[All]** A bot created with BotFather and its token at hand (do not paste it anywhere except
+  the `init` prompt). **Verified 2026-11-14.**
+- [x] **[All]** A second Telegram account (or a friend's) for the stranger tests. **Verified 2026-11-14.** Available,
+  not used yet.
+- [x] **[All]** In the checkout: `bun install` and `bun run check` pass. **Verified 2026-11-14.** Same result as CI
+  (3 skips: the opt-in smoke tests and the Windows-only cases). The page smoke test also passes
+  with the real `/usr/bin/chromium` (1280x800, 946 ms).
+- [x] **[All]** Use a throwaway state directory so nothing touches the real one
   ([F1](F1.md), manual verification). PowerShell:
   `$env:TELEGRAM_BRIDGE_HOME = "$env:TEMP\tb-live"`; bash: `export TELEGRAM_BRIDGE_HOME=/tmp/tb-live`.
   Set `TELEGRAM_BRIDGE_LOCALE=en` if you prefer English output. Use the same variables in every
-  terminal below.
+  terminal below. **Verified 2026-11-14.** `/tmp/tb-live`.
 
 ### Part 1: The channel contract without Telegram (F0)
 
 Source: [F0](F0.md), manual verification. This proves Claude Code accepts the server as a channel.
 
-- [ ] **[All]** Start `claude --dangerously-load-development-channels server:telegram-bridge` in the
+- [x] **[All]** Start `claude --dangerously-load-development-channels server:telegram-bridge` in the
   checkout with `TELEGRAM_BRIDGE_DEV_PORT=8788`. Expect the development-channels warning, the "New
   MCP server found" prompt, the `Channels (experimental)` notice and `/mcp` showing the server
-  connected.
+  connected. **Verified 2026-11-14.** `/mcp` lists the server under "Project MCPs" as connected with 1 tool, and the
+  debug log says `Channel notifications registered` (protocol `2025-11-25`, SDK 1.x). Still to
+  note: the owner did not report the warning or the "New MCP server found" prompt; the start
+  screen only shows "1 more notice hidden", which is absent without the channel flag.
 - [ ] **[All]** The dev listener's `Authorization` header is in `<stateDir>/dev-token` (Claude
   Code redacts bearer tokens in its debug log, so it is not printed). Then
   `curl -N -H "@<stateDir>/dev-token" http://127.0.0.1:8788/events` in a second terminal and
   `curl -X POST -H "@<stateDir>/dev-token" http://127.0.0.1:8788/ --data "What is in this directory? Reply through the channel."`
   in a third (use `curl.exe` in Windows PowerShell). Claude receives it, calls `reply`, and the reply
-  shows up in the first curl.
+  shows up in the first curl. **Verified 2026-11-14.** The session shows `← telegram-bridge: <text>`; the reply took
+  11 s end to end. The session was in auto mode, so `reply` raised no permission prompt.
 - [ ] **[All]** The same POST without the token answers `401`; with `-H "Origin: https://example.com"`
-  or `-H "Host: example.com"` it answers `403`. Nothing reaches Claude.
+  or `-H "Host: example.com"` it answers `403`. Nothing reaches Claude. **Verified 2026-11-14.** Also `401` for a
+  wrong token and for `GET /events` without one.
 - [ ] **[All]** With a bot token configured, `TELEGRAM_BRIDGE_DEV_PORT` is ignored: no listener, and
-  stderr says why. A malformed value (`87 88`) is logged and the server keeps running.
+  stderr says why. A malformed value (`87 88`) is logged and the server keeps running. Half
+  done on 2026-11-14: the malformed value logs `invalid dev port; the dev listener is off`, the
+  server stays connected and the channel is registered. The bot-token case is still to do.
 - [ ] **[Windows]** Count the `bun.exe` processes running `src/main.ts` with
   `Get-CimInstance Win32_Process -Filter "Name='bun.exe'" | Select-Object ProcessId, CommandLine`,
   then open a second session and count again: one process per session (ADR 0005 (a)). Exit
   Claude Code and confirm the processes are gone. On Linux or macOS use your process list for the
-  same check.
-- [ ] **[All]** Start `claude` without the channel flag: the server still starts, but a POST must not
-  reach Claude.
-- [ ] **[All]** Unset `TELEGRAM_BRIDGE_DEV_PORT` (the dev listener is for setups without a bot and
-  does not start once one is configured).
+  same check. Linux, 2026-11-14: one `bun ./src/main.ts` per session (`pgrep -af src/main.ts`),
+  and on exit Claude Code sends SIGINT and logs `MCP server process exited cleanly`. Two
+  sessions at once were not tried.
+- [x] **[All]** Start `claude` without the channel flag: the server still starts, but a POST must not
+  reach Claude. **Verified 2026-11-14.** curl gets `ok`, nothing appears in the session, and the debug log says
+  `Channel notifications skipped: server telegram-bridge not in --channels list for this session`.
+- [x] **[All]** Unset `TELEGRAM_BRIDGE_DEV_PORT` (the dev listener is for setups without a bot and
+  does not start once one is configured). **Verified 2026-11-14.**
 
 ### Part 2: Install and pair (F1)
 
 Source: [F1](F1.md), manual verification.
 
-- [ ] **[All]** `bun run bridge -- init`, paste the token (nothing echoes). Expect the success line
-  with the bot's name. `.env` and `bot.json` exist in `<stateDir>`.
-- [ ] **[Linux]** `ls -l <stateDir>` shows `-rw-------` for `.env` and `bridge.sqlite`, `drwx------`
-  for the directory.
-- [ ] **[All]** A wrong token prints a rejection and saves nothing. Optionally
-  `init --token-stdin` from a file.
-- [ ] **[All]** `bun run bridge -- pair` with no session running: QR, link, 120-second countdown. Scan,
+- [x] **[All]** `bun run bridge -- init`, paste the token (nothing echoes). Expect the success line
+  with the bot's name. `.env` and `bot.json` exist in `<stateDir>`. **Verified 2026-11-14.** The audit has one
+  `bot.initialized` row (bot id and username) and the token is nowhere in the database.
+- [x] **[Linux]** `ls -l <stateDir>` shows `-rw-------` for `.env` and `bridge.sqlite`, `drwx------`
+  for the directory. **Verified 2026-11-14.** `bot.json` is `-rw-r--r--` (not secret, inside the private directory).
+- [x] **[All]** A wrong token prints a rejection and saves nothing. Optionally
+  `init --token-stdin` from a file. **Verified 2026-11-14.** With `--token-stdin` in a separate directory: a
+  well-formed fake token and a malformed one both exit 1 and write no `.env`; a token passed as
+  an argument exits 2. Wording to review: the malformed one also prints "Validating the token
+  with Telegram" and "Telegram rejected the token", though no request should be made for it.
+- [x] **[All]** `bun run bridge -- pair` with no session running: QR, link, 120-second countdown. Scan,
   press Start; the phone says the code was received; the terminal shows your name, @username and id;
-  confirm. `bun run bridge -- access list` shows the account.
+  confirm. `bun run bridge -- access list` shows the account. **Verified 2026-11-14.** Audit: `pairing.started`,
+  `pairing.claimed`, `pairing.confirmed`, `sender.allowed`, with ids only; `pairings` keeps
+  `code_hash`, never the code.
 - [ ] **[All]** Pair again with the session running (start it as in Part 1 but without the dev port; stderr
   or `claude --debug` shows `telegram polling started`). `pair` says the session is receiving the
   messages and the claim arrives through the channel. Decline once with `n`: nobody is added.

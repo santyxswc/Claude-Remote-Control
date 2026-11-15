@@ -92,7 +92,7 @@ El MVP es un bot para una sola sesión de Claude Code.
   la clave `onFailure` ([ADR 0003](docs/adr/0003-stop-via-hook.md)); el relay de permisos requiere
   la 2.1.234 o posterior. La versión mínima exacta para channels **queda por confirmar en la
   validación en vivo**.
-- [Bun](https://bun.sh) (el canal, los hooks y la CLI son scripts de Bun).
+- [Bun](https://bun.sh) (el canal, los hooks y la CLI son scripts de Bun). La CI usa la 1.4.4. Arch Linux: `sudo pacman -S bun`.
 - Una cuenta de Telegram con verificación en dos pasos activada (Ajustes, Privacidad y seguridad,
   Verificación en dos pasos). Quien tome tu cuenta puede aprobar herramientas en tu PC.
 - Una sesión interactiva de Claude Code. El flag de canal de desarrollo se ignora con `-p`.
