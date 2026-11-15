@@ -187,8 +187,9 @@ En ambos casos, permite la herramienta `reply` una vez; si no, cada respuesta ab
 a su vez se reenvía a tu teléfono. Ver [Seguridad](#seguridad) y
 [docs/flows/F3.md](docs/flows/F3.md#the-reply-tool-needs-its-own-permission).
 
-Cuando funciona, el stderr del canal (visible con `claude --debug`) registra `telegram polling
-started`. Envía `/status` al bot para comprobarlo. El primer recorrido paso a paso está en
+Cuando funciona, el log del canal registra `telegram polling started`. Claude Code solo conserva
+el stderr del canal durante el arranque, así que para verlo define `TELEGRAM_BRIDGE_LOG_FILE`
+(ver [Configuración](#configuración)). Envía `/status` al bot para comprobarlo. El primer recorrido paso a paso está en
 [docs/flows/README.md](docs/flows/README.md).
 
 La CLI se ejecuta desde un checkout (`bun run bridge -- <comando>`). Usa el mismo directorio de
@@ -257,6 +258,7 @@ Todo son variables de entorno opcionales.
 | `TELEGRAM_BRIDGE_FFMPEG` | `ffmpeg` en el `PATH` | Ruta absoluta de `ffmpeg`, que convierte la nota (Opus) para whisper. |
 | `CLAUDE_PROJECT_DIR` | lo define Claude Code | El proyecto cuyas `.claude/skills` lista `/skills`. Si no está definido o es relativo, se usa el directorio de trabajo cuando tiene `.claude/` o `.git`; si no, solo se listan las skills personales. `/diff` y el mensaje de estado también lo usan (si no, el directorio de trabajo). |
 | `TELEGRAM_BRIDGE_DEBUG` | sin definir | `1` imprime diagnósticos en stderr desde los scripts de hooks. |
+| `TELEGRAM_BRIDGE_LOG_FILE` | sin definir | Ruta absoluta de un archivo que recibe también el log de diagnóstico del canal (solo para tu usuario, se añade al final, sin rotación). Claude Code conserva el stderr de un canal solo hasta que se establece la conexión MCP, así que líneas como `telegram polling started` no aparecen en ningún otro sitio, ni con `--debug`. Contiene ids de remitentes; nunca texto de mensajes ni secretos. Una ruta relativa se rechaza. |
 | `TELEGRAM_BRIDGE_DEV_PORT` | sin definir | Solo desarrollo, sin bot: un listener HTTP local (F0) que exige el token bearer que guarda en `<stateDir>/dev-token`, rechaza peticiones de navegador (`Origin`, `Host` ajeno) y no arranca si hay un token de bot configurado. Déjala sin definir. |
 
 Los hooks, la CLI y el canal deben resolver el mismo directorio de estado; define estas variables

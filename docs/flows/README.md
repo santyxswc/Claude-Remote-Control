@@ -47,6 +47,10 @@ session running. **Resume at Part 2, "Pair again with the session running".** Ch
 the date; the versions are these unless an item says otherwise. The throwaway state directory was
 `/tmp/tb-live`, which a reboot clears: if it is gone, repeat `init` and `pair` first.
 
+Reading the channel's log: Claude Code keeps a server's stderr only until the connection is up,
+so wherever an item says "stderr shows" a line that is logged later, export
+`TELEGRAM_BRIDGE_LOG_FILE=<stateDir>/channel.log` before starting the session and read that file.
+
 Conventions: `<stateDir>` is the throwaway directory below; "the session" is Claude Code started
 with the channel; the audit query is the one at the end of F1's manual verification.
 

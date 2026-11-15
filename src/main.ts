@@ -20,6 +20,7 @@ import {
 } from './adapters/dev/DevHttpInbound.ts'
 import { DEV_PORT_ENV, devListenerPort } from './adapters/dev/devPort.ts'
 import { GitCli } from './adapters/git/GitCli.ts'
+import { FileTeeSink, LOG_FILE_ENV, parseLogFile } from './adapters/logging/FileTeeSink.ts'
 import { RedactingLogger } from './adapters/logging/RedactingLogger.ts'
 import { StderrLogger } from './adapters/logging/StderrLogger.ts'
 import { McpChannelServer } from './adapters/mcp/McpChannelServer.ts'
@@ -50,7 +51,16 @@ const SERVER_NAME = 'telegram-bridge'
 const PROJECT_DIR_ENV = 'CLAUDE_PROJECT_DIR'
 const MAX_UPLOAD_ENV = 'TELEGRAM_BRIDGE_MAX_UPLOAD_MB'
 
-let logger: Logger = new StderrLogger()
+// Claude Code keeps a server's stderr only until the connection is up; the optional file has it all.
+const logFile = parseLogFile(process.env[LOG_FILE_ENV])
+let logger: Logger = new StderrLogger(
+  logFile.kind === 'file' ? new FileTeeSink(process.stderr, logFile.path) : process.stderr,
+)
+if (logFile.kind === 'invalid') {
+  logger.error('the log file must be an absolute path; logging to stderr only', {
+    variable: LOG_FILE_ENV,
+  })
+}
 
 process.on('unhandledRejection', (error) => logger.error('unhandled rejection', { error }))
 process.on('uncaughtException', (error) => logger.error('uncaught exception', { error }))
