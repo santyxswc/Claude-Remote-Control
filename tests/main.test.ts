@@ -46,6 +46,7 @@ beforeAll(async () => {
     env: {
       TELEGRAM_BRIDGE_DEV_PORT: '0',
       TELEGRAM_BRIDGE_HOME: stateDir,
+      TELEGRAM_BRIDGE_LOG_FILE: join(stateDir, 'channel.log'),
       TELEGRAM_BOT_TOKEN: '',
       CLAUDE_PROJECT_DIR: projectDir,
     },
@@ -228,3 +229,15 @@ test('a malformed TELEGRAM_BRIDGE_DEV_PORT is logged and the channel keeps servi
     removeTempDir(dir)
   }
 }, 20_000)
+
+// Claude Code 2.1.325 keeps a server's stderr only until the connection is up.
+test('TELEGRAM_BRIDGE_LOG_FILE gets the same lines as stderr, without the dev token', () => {
+  const logged = readFileSync(join(stateDir, 'channel.log'), 'utf8')
+  expect(logged).toContain('telegram-bridge [info] channel connected')
+  expect(logged).toContain('telegram-bridge [info] dev inbound listening')
+  expect(logged).not.toContain(devToken)
+  expect(logged).not.toContain(PROJECT_SECRET)
+  for (const line of logged.trimEnd().split('\n')) {
+    expect(stderr).toContain(line)
+  }
+})

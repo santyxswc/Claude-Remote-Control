@@ -248,6 +248,14 @@ items above; the rest stay open.
 - **Where MCP stderr goes.** Not to the session. With `--debug` it is copied to
   `~/.claude/debug/<session-id>.txt` as `[ERROR] "MCP server \"<name>\" Server stderr: ..."`
   entries (the level is always ERROR, whatever the server meant).
+- **Only the stderr written before the connection is up is kept** (seen on 2026-11-15). The
+  entry above is written once, when the MCP connection is established. Everything the server
+  logs afterwards (`telegram polling started`, dropped senders, pairing claims) appears neither
+  in the debug log nor in
+  `~/.cache/claude-cli-nodejs/<project>/mcp-logs-<server>/<start time>.jsonl`, which holds the
+  same startup entry plus Claude Code's own lines about the server (connection, channel
+  registration, each `notifications/claude/channel` and tool call). `TELEGRAM_BRIDGE_LOG_FILE`
+  makes the channel append its log to a file for that reason.
 - **The debug log redacts credentials.** `Bearer` and the word after it become `[REDACTED]`, as
   do `token=` values and some URL parameters. A secret printed to stderr for the user to copy is
   therefore lost, and so is a ready-to-paste line that spells `Authorization: Bearer ...`. The

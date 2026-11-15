@@ -182,8 +182,9 @@ Also in both cases: allow the `reply` tool once, or every answer will open a per
 that is itself relayed to your phone. See [Security](#security) and
 [docs/flows/F3.md](docs/flows/F3.md#the-reply-tool-needs-its-own-permission).
 
-When it works, the channel's stderr (visible with `claude --debug`) logs `telegram polling
-started`. Send `/status` to the bot to check. The step-by-step first run is in
+When it works, the channel's log says `telegram polling started`. Claude Code keeps a channel's
+stderr only during startup, so set `TELEGRAM_BRIDGE_LOG_FILE` to see it (see
+[Configuration](#configuration)). Send `/status` to the bot to check. The step-by-step first run is in
 [docs/flows/README.md](docs/flows/README.md).
 
 The CLI is run from a checkout (`bun run bridge -- <command>`). It uses the same state directory
@@ -250,6 +251,7 @@ All settings are optional environment variables.
 | `TELEGRAM_BRIDGE_FFMPEG` | `ffmpeg` on `PATH` | Absolute path of `ffmpeg`, which converts the note (Opus) for whisper. |
 | `CLAUDE_PROJECT_DIR` | set by Claude Code | The project whose `.claude/skills` `/skills` lists. When it is unset or relative, the working directory is used if it has `.claude/` or `.git`; otherwise only personal skills are listed. `/diff` and the pinned status use it too (else the working directory). |
 | `TELEGRAM_BRIDGE_DEBUG` | unset | `1` prints diagnostics on stderr from the hook scripts. |
+| `TELEGRAM_BRIDGE_LOG_FILE` | unset | Absolute path of a file that also receives the channel's diagnostic log (owner-only, appended, never rotated). Claude Code keeps a channel's stderr only until the MCP connection is up, so lines such as `telegram polling started` appear nowhere else, even with `--debug`. Sender ids appear in it; message text and secrets do not. A relative path is refused. |
 | `TELEGRAM_BRIDGE_DEV_PORT` | unset | Development only, without a bot: a local HTTP listener (F0) that needs the bearer token it keeps in `<stateDir>/dev-token`, refuses browser requests (`Origin`, foreign `Host`), and does not start when a bot token is configured. Leave it unset. |
 
 The hooks, the CLI and the channel must resolve the same state directory, so set these variables
