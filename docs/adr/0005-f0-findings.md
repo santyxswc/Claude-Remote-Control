@@ -265,9 +265,14 @@ items above; the rest stay open.
   `TELEGRAM_BRIDGE_DEV_PORT` exported in the shell reached the server.
 - **Auto mode.** In a session with auto mode on, the `reply` call raised no permission prompt;
   the permission relay (F3) has to be tested in manual mode.
-- **Not observed yet:** the development-channels warning, the "New MCP server found" prompt and
-  the `Channels (experimental)` notice. The start screen shows "1 more notice hidden" with the
-  channel flag and nothing without it.
+- **The development-channels warning** is a full-screen dialog on every start ("WARNING: Loading
+  development channels ... Channels: server:telegram-bridge", with "I am using this for local
+  development" and "Exit"). The "New MCP server found" prompt was not seen. The start screen
+  shows "1 more notice hidden" with the channel flag and nothing without it; whether that is
+  the `Channels (experimental)` notice is not confirmed.
+- **Telegram hands over old messages** (2026-11-15). A text sent while nothing was polling was
+  delivered to the session started 17 hours later. The channel now drops messages sent more
+  than 60 s before it started to poll (`docs/flows/F2.md`).
 
 ## Follow-ups
 
